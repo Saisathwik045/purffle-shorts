@@ -16,6 +16,7 @@ import requests
 from . import clipper, ffmpeg
 from .cloud import cloud_settings, fetch
 from .pipeline import Studio
+from .whisper_assets import prepare
 
 
 class DashboardClient:
@@ -106,7 +107,7 @@ def process(client: DashboardClient, job: dict, root: Path, *, synthetic_fixture
         raise ValueError("Invalid dashboard clipping limits")
     settings = cloud_settings(root / "render").with_overrides(
         resolution=resolution, caption_style=opts["caption_style"], language=opts["language"],
-        whisper_model=os.environ.get("PURFFLE_WHISPER_MODEL_PATH", "base"))
+        whisper_model=os.environ.get("PURFFLE_WHISPER_MODEL_PATH") or prepare())
     stage = "TRANSCRIBING"
 
     def progress(name, _legacy_percentage, message):

@@ -17,12 +17,6 @@ from PIL import Image
 from purffle_shorts import ffmpeg
 from purffle_shorts.dashboard_worker import DashboardClient, process
 
-TEXT = ("This is a synthetic recording for a cloud video test. "
-        "Every video should have readable captions and clear audio. "
-        "Our small speech recognition model runs on a CPU in the cloud. "
-        "The original pictures and spoken words are created only for this test. "
-        "Nothing is uploaded to YouTube and no computer at home does the work.")
-
 
 def main():
     with tempfile.TemporaryDirectory(prefix="purffle-e2e-") as folder:

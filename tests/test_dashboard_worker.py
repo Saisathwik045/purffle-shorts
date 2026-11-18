@@ -32,6 +32,7 @@ def test_uncleared_job_never_fetches_media(tmp_path, monkeypatch):
 
 
 def test_bridge_reuses_clipper_and_reports_only_actual_stages(tmp_path, monkeypatch):
+    monkeypatch.setenv("PURFFLE_WHISPER_MODEL_PATH", str(tmp_path / "test-model"))
     updates, files = [], []
     client = SimpleNamespace(update=lambda operation, data: updates.append((operation, data)) or {"id": "clip-id"},
                              file=lambda *args: files.append(args))
