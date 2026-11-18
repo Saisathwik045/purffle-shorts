@@ -335,7 +335,7 @@ function clipsPage(review = false) {
     clips = clips.filter(
       (c) => c.review_status === currentFilter.toUpperCase(),
     );
-  return `${head(review ? "Good edits deserve a second look." : "Your moments, made short.", review ? "Watch each clip, check its subtitles and record your decision." : "Generated videos are private cloud outputs. They are separate from publications.")}<div class="toolbar"><div class="filters">${(review ? ["All", "Pending", "Approved", "Rejected"] : ["All"]).map((f) => `<button class="filter ${currentFilter === f ? "selected" : ""}" data-filter="${f}">${f}</button>`).join("")}</div><span class="badge gray">Uploads disabled</span></div>${clips.length ? `<div class="clip-grid">${clips.map((c) => `<article class="card clip-card"><div class="clip-frame"><video controls preload="metadata" src="/api/clips/${c.id}/video" aria-label="${esc(c.title)}"></video></div><div class="clip-info">${badge(c.review_status)}<h3>${esc(c.title)}</h3><p>${Math.round(c.duration)} seconds · Generated ${date(c.created_at)} · 7-day media retention</p><div class="actions"><a class="btn small" href="/api/clips/${c.id}/subtitles">${icon("download")} Subtitles</a><a class="btn small" href="/jobs/${c.job_id}" data-nav>Source & history</a></div>${review ? `<div class="actions"><button class="btn small primary" data-review="${c.id}" data-decision="APPROVED">${icon("check")} Approve</button><button class="btn small danger" data-review="${c.id}" data-decision="REJECTED">Reject</button></div><small style="display:block;margin-top:12px">Approval saves your decision. It never starts an upload.</small>` : ""}</div></article>`).join("")}</div>` : `<section class="card large-empty">${empty(review ? "shield" : "clips", review ? "Nothing waiting for review" : "No generated clips yet", review ? "Completed cloud jobs will appear here with a video preview, subtitles and source history." : "Clips appear only after a worker saves completed video and subtitle files. No sample clips are mixed into your library.", createLink)}</section>`}`;
+  return `${head(review ? "Good edits deserve a second look." : "Your moments, made short.", review ? "Watch each clip, check its subtitles and record your decision." : "Generated videos are private cloud outputs. They are separate from publications.")}<div class="toolbar"><div class="filters">${(review ? ["All", "Pending", "Approved", "Rejected"] : ["All"]).map((f) => `<button class="filter ${currentFilter === f ? "selected" : ""}" data-filter="${f}">${f}</button>`).join("")}</div><span class="badge gray">Uploads disabled</span></div>${clips.length ? `<div class="clip-grid">${clips.map((c) => `<article class="card clip-card"><div class="clip-frame"><video controls playsinline preload="metadata" data-preview="${c.id}" src="/api/clips/${c.id}/video" aria-label="${esc(c.title)}"></video></div><div class="clip-info"><div class="note amber" data-preview-error role="status" hidden></div>${badge(c.review_status)}<h3>${esc(c.title)}</h3><p>${Math.round(c.duration)} seconds · Generated ${date(c.created_at)} · 7-day media retention</p><div class="actions"><a class="btn small" href="/api/clips/${c.id}/subtitles">${icon("download")} Subtitles</a><a class="btn small" href="/jobs/${c.job_id}" data-nav>Source & history</a></div>${review ? `<div class="actions"><button class="btn small primary" data-review="${c.id}" data-decision="APPROVED">${icon("check")} Approve</button><button class="btn small danger" data-review="${c.id}" data-decision="REJECTED">Reject</button></div><small style="display:block;margin-top:12px">Approval saves your decision. It never starts an upload.</small>` : ""}</div></article>`).join("")}</div>` : `<section class="card large-empty">${empty(review ? "shield" : "clips", review ? "Nothing waiting for review" : "No generated clips yet", review ? "Completed cloud jobs will appear here with a video preview, subtitles and source history." : "Clips appear only after a worker saves completed video and subtitle files. No sample clips are mixed into your library.", createLink)}</section>`}`;
 }
 function publishing() {
   return `${head("Published means published.", "Only confirmed publication records belong here. Generated clips stay in your library.")}<div class="note section-space" style="margin-bottom:22px"><strong>Publishing remains disabled.</strong>Connecting an account or approving a clip does not authorize uploading. No publishing action is available in this release.</div><section class="card">${state.publications.length ? `<div class="table-wrap"><table><thead><tr><th>Clip</th><th>Status</th><th>Published</th><th>YouTube</th></tr></thead><tbody>${state.publications.map((p) => `<tr><td>${esc(p.title)}</td><td>${badge(p.state)}</td><td>${date(p.published_at)}</td><td>${p.youtube_id ? `<a href="https://www.youtube.com/watch?v=${encodeURIComponent(p.youtube_id)}" target="_blank" rel="noopener">View on YouTube ↗</a>` : "No confirmed video"}</td></tr>`).join("")}</tbody></table></div>` : empty("youtube", "No videos have been published", "This page will show confirmed upload results when publishing is explicitly enabled in a later phase. Approvals and generated clips are not counted as publications.", '<a href="/clips" data-nav class="btn">View generated clips →</a>')}</section>`;
@@ -523,6 +523,51 @@ document.addEventListener("click", async (e) => {
     if (review) review.disabled = false;
   }
 });
+document.addEventListener(
+  "error",
+  async (event) => {
+    const video = event.target;
+    if (!(video instanceof HTMLVideoElement) || !video.dataset.preview) return;
+    const box = video
+      .closest(".clip-card")
+      ?.querySelector("[data-preview-error]");
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = "Checking private video availability…";
+    try {
+      const result = await fetch(`/api/clips/${video.dataset.preview}/video`, {
+        method: "HEAD",
+        credentials: "same-origin",
+        redirect: "error",
+      });
+      const messages = {
+        401: "Your session has ended. Refresh this page and sign in again to view the private clip.",
+        403: "Private clip access was denied. Refresh this page to check your sign-in.",
+        404: "This clip is no longer available. Open Source & history to check its job.",
+        410: "The clip expired or its file is missing. Open Source & history to review cleanup and regeneration with current source rights.",
+        429: "The private storage request limit was reached. Check cloud usage before retrying playback.",
+        503: "Private media serving is paused. Check account allowances and cloud configuration in Settings.",
+      };
+      box.textContent =
+        messages[result.status] ||
+        "Playback could not start. Retry the preview or open Source & history to review the cloud result.";
+      if (result.ok) {
+        const retry = document.createElement("button");
+        retry.className = "btn small section-space";
+        retry.textContent = "Retry preview";
+        retry.onclick = () => {
+          box.hidden = true;
+          video.load();
+        };
+        box.append(document.createElement("br"), retry);
+      }
+    } catch {
+      box.textContent =
+        "The private video connection failed or sign-in is required. Refresh the page, then check Source & history if playback still fails.";
+    }
+  },
+  true,
+);
 document.addEventListener("submit", async (e) => {
   const form = e.target;
   if (!["new-job-form", "auth-form", "settings-form"].includes(form.id)) return;

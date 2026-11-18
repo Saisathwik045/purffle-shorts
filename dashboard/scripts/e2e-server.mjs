@@ -17,6 +17,13 @@ const bucket = {
     for (const key of Array.isArray(keys) ? keys : [keys])
       await rm(resolve(root, "objects", key), { force: true });
   },
+  async head(key) {
+    try {
+      return { size: (await stat(resolve(root, "objects", key))).size };
+    } catch {
+      return null;
+    }
+  },
   async get(key, opts) {
     let bytes;
     try {
@@ -25,12 +32,11 @@ const bucket = {
       return null;
     }
     const size = bytes.length;
-    const range = opts?.range?.get("range")?.match(/^bytes=(\d+)-(\d*)$/);
+    const range = opts?.range;
     let info;
     if (range) {
-      const offset = Number(range[1]);
-      const end = range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
-      bytes = bytes.subarray(offset, end + 1);
+      const offset = range.offset;
+      bytes = bytes.subarray(offset, offset + range.length);
       info = { offset, length: bytes.length };
     }
     return {
