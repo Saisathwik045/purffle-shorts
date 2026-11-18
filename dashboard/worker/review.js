@@ -19,7 +19,7 @@ export async function approvalValid(clip) {
   return clip.review_status === "APPROVED" && !!clip.approval_hash && clip.approval_hash === await contentHash(clip);
 }
 export async function publishingPreparation(clip, sourceAuthorization, channel = null, time = Date.now()) {
-  const metadata = completeMetadata(clip,clip);
+  const metadata = completeMetadata(clipFields(clip),clip);
   const blockers = ["YouTube publishing is disabled. This document cannot authorize or execute an upload."];
   if (!await approvalValid(clip)) blockers.push("The current metadata and video must be approved by the owner.");
   if (!currentAuthorization(sourceAuthorization)) blockers.push("Current source rights have not been recorded.");

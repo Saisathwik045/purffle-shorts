@@ -12,7 +12,7 @@ Edits, regeneration and media replacement invalidate approval and pending intent
 ## Google setup (account actions, not performed automatically)
 Create or use a Google Cloud project with YouTube Data API v3 enabled. Configure the OAuth consent screen, test users as needed and a Web application OAuth client. Register the exact deployed callback URL, /api/youtube/callback. These API/OAuth configuration steps do not require enabling paid billing for this application.
 
-Set YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI and TOKEN_ENCRYPTION_KEY as private server configuration. TOKEN_ENCRYPTION_KEY is a random 32-byte base64 key; never put it or tokens in public assets, logs or Git. Preserve this key to retain existing encrypted connections. The dashboard reports missing configuration without exposing values.
+Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and TOKEN_ENCRYPTION_KEY as private server configuration. The callback URI is derived from the request origin and is pinned in each pending OAuth transaction; register that exact HTTPS URI with Google. TOKEN_ENCRYPTION_KEY is a random 32-byte base64 key; never put it or tokens in public assets, logs or Git. Preserve this key to retain existing encrypted connections. The dashboard reports missing configuration without exposing values.
 
 The owner connects through Google's consent page. Authorization uses one-use, expiring, owner-bound state, PKCE, encrypted refresh/access tokens and the official channel API. Disconnect deletes the local connection and invalidates intents; Google revocation is attempted and reported separately if unavailable. The scopes are youtube.upload and youtube.readonly.
 

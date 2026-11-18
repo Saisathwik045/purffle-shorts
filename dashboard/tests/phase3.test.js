@@ -137,3 +137,27 @@ test("disconnect cancels an OAuth callback already exchanging its code",async()=
  await assert.rejects(finishOAuth(x.env,x.DB,"owner",new URL("https://purffle.test/api/youtube/callback?state="+state+"&code=code"),send),e=>e.status===409);
  assert.equal(x.DB.db.prepare("SELECT COUNT(*) n FROM youtube_accounts").get().n,0);
 });
+
+test("resumable transport rejects unsafe session locations and expired sessions",async()=>{
+ const denied=new YouTubeResumableClient(async()=>new Response(null,{status:200,headers:{Location:"https://attacker.test/upload/youtube/v3/videos?token=secret"}}),"mock-token");
+ await assert.rejects(denied.initiate({title:"Test",description:"",hashtags:[]},100),e=>e.status===502);
+ const expired=new YouTubeResumableClient(async()=>new Response(null,{status:410}),"mock-token");
+ await assert.rejects(expired.status("https://www.googleapis.com/upload/youtube/v3/videos?upload_id=old",100),e=>e.status===410);
+});
+test("active intent lease prevents duplicate concurrent initiation",async()=>{
+ const x=await fixture(),intent=await x.prepare();let release,entered;
+ const waiting=new Promise(r=>release=r),started=new Promise(r=>entered=r);let count=0;
+ const transport={async initiate(){count++;entered();await waiting;return "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=one";}};
+ const read=async()=>Buffer.alloc(0);read.verify=async()=>true;
+ const first=advanceIntent(x.env,x.DB,intent.id,transport,read);await started;
+ await assert.rejects(advanceIntent(x.env,x.DB,intent.id,transport,read),e=>e.status===409);
+ release();await first;assert.equal(count,1);
+});
+test("expired OAuth state is rejected before exchanging any code",async()=>{
+ const x=await fixture(),response=await startOAuth(x.env,x.DB,"owner","https://purffle.test");
+ const state=new URL(response.headers.get("location")).searchParams.get("state");
+ x.DB.db.prepare("UPDATE oauth_states SET expires_at='2000-01-01T00:00:00.000Z'").run();
+ let sent=false;
+ await assert.rejects(finishOAuth(x.env,x.DB,"owner",new URL("https://purffle.test/api/youtube/callback?state="+state+"&code=expired"),async()=>{sent=true;}),e=>e.status===403);
+ assert.equal(sent,false);
+});
