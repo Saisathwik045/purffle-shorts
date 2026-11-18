@@ -13,6 +13,7 @@ test("deterministic metadata supplies all six fields without paid APIs",()=>{
  assert.equal(a.metadata_method,"deterministic-extractive-v1");
  assert(a.commentary_notice.includes("No original commentary"));
  assert(generateMetadata({sourceTitle:"Source",position:2}).title.includes("Excerpt 2"));
+ assert(generateMetadata({transcript:"x".repeat(200)}).hashtags.every(t=>[...t].length<=41));
 });
 test("metadata, hashtags, regeneration and approval history persist",async()=>{
  const x=await fixture();await x.approve();assert(x.row().approval_hash);

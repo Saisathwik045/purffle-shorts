@@ -22,7 +22,7 @@ export function generateMetadata({ transcript = "", sourceTitle = "", attributio
   const title = clean(sentence, 100) || clean("Excerpt " + position + ": " + fallback, 100);
   const words = (excerpt || fallback).toLocaleLowerCase("en").match(/[\p{L}\p{N}]{3,}/gu) || [];
   const frequencies = new Map();
-  for (const word of words) if (!stop.has(word)) frequencies.set(word, (frequencies.get(word) || 0) + 1);
+  for (const word of words) if (!stop.has(word) && [...word].length <= 40) frequencies.set(word, (frequencies.get(word) || 0) + 1);
   const keywords = [...frequencies].sort((a,b) => b[1]-a[1] || (a[0]<b[0]?-1:1)).slice(0,4).map(([word])=>word);
   const tags = hashtags(["Shorts", ...keywords]);
   const source_attribution = String(attribution || "").trim().slice(0,1200);

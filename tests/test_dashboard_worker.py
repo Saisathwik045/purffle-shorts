@@ -127,3 +127,21 @@ def test_verify_storage_uses_private_probe_without_claiming(monkeypatch, capsys)
     W.main()
     assert calls == [("POST", "/api/worker/verify-storage")]
     assert "proof persisted" in capsys.readouterr().out
+
+def test_worker_upload_attaches_fingerprint_and_rewinds_payload(tmp_path):
+    import hashlib
+
+    client = W.DashboardClient.__new__(W.DashboardClient)
+    client.job = {"id": "job"}
+    path = tmp_path / "short.mp4"
+    payload = b"synthetic-video-for-fingerprint" * 40000
+    path.write_bytes(payload)
+    observed = {}
+    def send(method, route, **kwargs):
+        observed.update(kwargs)
+        assert kwargs["data"].read() == payload
+        return {"saved": True}
+    client.request = send
+    assert client.file("clip", "video", path) == {"saved": True}
+    assert observed["headers"]["X-Content-SHA256"] == hashlib.sha256(payload).hexdigest()
+    assert observed["headers"]["Content-Length"] == str(len(payload))

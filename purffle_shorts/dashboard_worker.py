@@ -67,7 +67,10 @@ class DashboardClient:
 
     def file(self, clip_id: str, kind: str, path: Path):
         with path.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            fingerprint = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                fingerprint.update(chunk)
+            digest = fingerprint.hexdigest()
             handle.seek(0)
             return self.request("PUT", f"/api/worker/jobs/{self.job['id']}/clips/{clip_id}/{kind}",
                                 data=handle, headers={"Content-Length": str(path.stat().st_size), "X-Content-SHA256": digest,
