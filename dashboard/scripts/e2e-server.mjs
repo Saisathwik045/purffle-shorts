@@ -17,6 +17,13 @@ const bucket = {
     for (const key of Array.isArray(keys) ? keys : [keys])
       await rm(resolve(root, "objects", key), { force: true });
   },
+  async head(key) {
+    try {
+      return { size: (await stat(resolve(root, "objects", key))).size };
+    } catch {
+      return null;
+    }
+  },
   async get(key, opts) {
     let bytes;
     try {
@@ -25,12 +32,11 @@ const bucket = {
       return null;
     }
     const size = bytes.length;
-    const range = opts?.range?.get("range")?.match(/^bytes=(\d+)-(\d*)$/);
+    const range = opts?.range;
     let info;
     if (range) {
-      const offset = Number(range[1]);
-      const end = range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
-      bytes = bytes.subarray(offset, end + 1);
+      const offset = range.offset;
+      bytes = bytes.subarray(offset, offset + range.length);
       info = { offset, length: bytes.length };
     }
     return {
@@ -51,9 +57,13 @@ const env = {
   BUCKET: bucket,
   WORKER_TOKEN: "synthetic-test-worker",
   // Isolated development/test harness, not provider authorization for production.
-  ACTIONS_APP_USE_AUTHORIZED: "true",
+  WORKER_PROVIDER: "https",
+  WORKER_BACKEND_AUTHORIZED: "true",
+  WORKER_NO_CHARGE_VERIFIED: "true",
+  WORKER_DISPATCH_URL: "https://worker.example.org/dispatches",
+  WORKER_DISPATCH_HOST: "worker.example.org",
+  WORKER_DISPATCH_TOKEN: "isolated-test-dispatch-token-32-characters",
   FREE_TIER_VERIFIED: "true",
-  GITHUB_DISPATCH_TOKEN: "isolated-test-token",
 };
 // Exercise the real probe and proof persistence before the synthetic job is submitted.
 const probe = await worker.fetch(
@@ -69,20 +79,14 @@ const probe = await worker.fetch(
 );
 if (!probe.ok || !(await probe.json()).storage_verified)
   throw new Error("Isolated cloud storage verification failed");
-// Only the GitHub dispatch boundary is stubbed: the actual cloud worker is this CI job.
+// Only provider dispatch is stubbed. This is software-test infrastructure, not a production worker.
 // No production credentials, Site, YouTube content, transcript, renderer or media are mocked.
-globalThis.fetch = async (url) => {
-  if (String(url).endsWith("/repos/Saisathwik045/purffle-shorts"))
-    return Response.json({
-      private: false,
-      full_name: "Saisathwik045/purffle-shorts",
-      default_branch: "main",
-    });
-  if (String(url).endsWith("/dispatches"))
-    return new Response(null, { status: 204 });
-  throw new Error(
-    "This isolated fixture does not fetch external source metadata",
-  );
+globalThis.fetch = async (url, init) => {
+  if (String(url) === env.WORKER_DISPATCH_URL) {
+    const job = JSON.parse(init.body);
+    return Response.json({ contract: job.contract, job_id: job.job_id, attempt: job.attempt, accepted: true }, { status: 202 });
+  }
+  throw new Error("This isolated fixture does not fetch external source metadata");
 };
 const server = http.createServer(async (req, res) => {
   try {

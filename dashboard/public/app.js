@@ -312,7 +312,7 @@ function jobDetail() {
   if (!detail)
     return `${head("Opening job…", "Loading the persistent job record.")}<div class="card">${empty("cloud", "Loading cloud history", "The dashboard is fetching this job’s recorded stages.")}</div>`;
   const { job: j, events } = detail;
-  return `${head(esc(j.title), "Job " + esc(j.id.slice(0, 8)) + " · Created " + date(j.created_at), `<div class="actions"><a href="/jobs" data-nav class="btn">All jobs</a><button class="btn" data-action="refresh">${icon("refresh")} Refresh</button></div>`)}<div class="two-col"><div class="stack"><section class="card"><div class="card-head"><h2>Current stage</h2>${badge(j.state)}</div><div class="card-body"><p style="font-size:12px">${j.state === "QUEUED" ? "This authorized job is waiting for a cloud CPU worker. No processing has started." : j.state === "AWAITING_SOURCE_AUTHORIZATION" ? "This job is saved, but it is outside the processing queue until you authorize the source." : j.state === "FAILED" ? "The last processing attempt failed. Its error and event history are preserved." : j.state === "READY_FOR_REVIEW" ? "Generated clips are saved privately and ready for your review." : j.state === "APPROVED" ? "Review decisions are saved. Publishing remains disabled." : "The cloud worker reports the current stage. Refresh to fetch the latest record."}</p><small style="display:block;margin-top:12px">Last update ${date(j.updated_at)} · Attempt ${j.attempt} · No estimated percentage</small>${j.error ? `<div class="note red section-space"><strong>Processing error</strong>${esc(j.error)}</div>` : ""}${j.state === "QUEUED" ? `<div class="note section-space"><strong>Worker dispatch: ${esc(j.dispatch_status || "not confirmed")}</strong>${esc(j.dispatch_error || "Waiting for GitHub to report a claim.")} ${j.runner_url ? `<a href="${esc(j.runner_url)}" target="_blank" rel="noopener">View GitHub run ↗</a>` : ""}</div><button class="btn section-space" data-wake="${j.id}">Retry worker wake</button>` : ""}
+  return `${head(esc(j.title), "Job " + esc(j.id.slice(0, 8)) + " · Created " + date(j.created_at), `<div class="actions"><a href="/jobs" data-nav class="btn">All jobs</a><button class="btn" data-action="refresh">${icon("refresh")} Refresh</button></div>`)}<div class="two-col"><div class="stack"><section class="card"><div class="card-head"><h2>Current stage</h2>${badge(j.state)}</div><div class="card-body"><p style="font-size:12px">${j.state === "QUEUED" ? "This authorized job is waiting for a cloud CPU worker. No processing has started." : j.state === "AWAITING_SOURCE_AUTHORIZATION" ? "This job is saved, but it is outside the processing queue until you authorize the source." : j.state === "FAILED" ? "The last processing attempt failed. Its error and event history are preserved." : j.state === "READY_FOR_REVIEW" ? "Generated clips are saved privately and ready for your review." : j.state === "APPROVED" ? "Review decisions are saved. Publishing remains disabled." : "The cloud worker reports the current stage. Refresh to fetch the latest record."}</p><small style="display:block;margin-top:12px">Last update ${date(j.updated_at)} · Attempt ${j.attempt} · No estimated percentage</small>${j.error ? `<div class="note red section-space"><strong>Processing error</strong>${esc(j.error)}</div>` : ""}${j.state === "QUEUED" ? `<div class="note section-space"><strong>Worker dispatch: ${esc(j.dispatch_status || "not confirmed")}</strong>${esc(j.dispatch_error || "Waiting for an authorized cloud provider to report a claim.")} ${j.runner_url ? `<a href="${esc(j.runner_url)}" target="_blank" rel="noopener">View processing run ↗</a>` : ""}</div><button class="btn section-space" data-wake="${j.id}">Retry worker wake</button>` : ""}
 ${["READY_FOR_REVIEW", "APPROVED", "FAILED"].includes(j.state) ? `<button class="btn danger section-space" data-cleanup="${j.id}">Delete generated files · keep history</button>` : ""}
 ${j.state === "FAILED" && j.retryable ? `<button class="btn section-space" data-retry="${j.id}">${icon("refresh")} Retry processing safely</button>` : ""}${["READY_FOR_REVIEW", "APPROVED"].includes(j.state) ? '<a href="/review" data-nav class="btn primary section-space">Open review workspace →</a>' : ""}</div></section>${j.state === "AWAITING_SOURCE_AUTHORIZATION" ? `<form class="card" id="auth-form" data-job="${j.id}"><div class="card-head"><h2>Authorize this source</h2></div><div class="card-body">${authFields()}<div class="error" role="alert" id="auth-error"></div><button class="btn primary section-space" type="submit">${icon("shield")} Authorize & queue</button></div></form>` : ""}<section class="card"><div class="card-head"><h2>Recorded activity</h2><small>Server timestamps</small></div><div class="timeline">${events.map((e) => `<div class="timeline-item"><span class="timeline-dot"></span><div><h3>${esc(labels[e.state] || e.state)}</h3><p>${esc(e.message)}</p><small>${date(e.created_at)} · Attempt ${e.attempt}</small></div></div>`).join("")}</div></section></div><div class="stack"><section class="card"><div class="card-head"><h2>Job settings</h2></div><div class="card-body key-values">${[
     ["Clips requested", j.options.count],
@@ -327,6 +327,9 @@ ${j.state === "FAILED" && j.retryable ? `<button class="btn section-space" data-
       "",
     )}</div></section><section class="card"><div class="card-head"><h2>Source authorization</h2></div><div class="card-body">${badge(j.authorization ? "APPROVED" : "AWAITING_SOURCE_AUTHORIZATION")}<p class="muted word-wrap" style="font-size:11px;margin-top:15px">${j.authorization ? esc(j.authorization.evidence) : "No approved evidence has been recorded."}</p>${j.authorization ? `<div class="note section-space"><strong>${esc(j.authorization.license)} · Direct HTTPS media</strong>${esc(j.authorization.attribution)}</div><small style="display:block;margin-top:12px">Reviewed ${esc(j.authorization.reviewed_on)}${j.authorization.expires_on ? " · Expires " + esc(j.authorization.expires_on) : ""}</small>` : ""}<a href="${esc(j.source_url)}" target="_blank" rel="noopener noreferrer" class="btn small section-space">${icon("youtube")} Original source</a></div></section><div class="note">Clip selection uses sentence-based windows without a paid LLM. The worker may return fewer clips when there is insufficient usable speech.</div></div></div>`;
 }
+function metadataEditor(c) {
+  return `<details class="section-space"><summary>Review title and description</summary><form id="clip-metadata-${esc(c.id)}" data-metadata-clip="${esc(c.id)}" data-metadata-hash="${esc(c.metadata_hash || "")}"><label class="field">Title<input name="title" required maxlength="100" value="${esc(c.title)}"></label><label class="field">Description<textarea name="description" maxlength="5000" rows="4">${esc(c.description)}</textarea></label><small>Editing metadata clears previous approval. Uploading remains disabled.</small><div class="error" role="alert"></div><button class="btn small" type="submit">Save metadata</button></form></details><button class="btn small section-space" data-prepare="${esc(c.id)}">Download publishing preparation</button>`;
+}
 function clipsPage(review = false) {
   let clips = state.clips.filter((c) =>
     c.title.toLowerCase().includes(search.toLowerCase()),
@@ -335,7 +338,7 @@ function clipsPage(review = false) {
     clips = clips.filter(
       (c) => c.review_status === currentFilter.toUpperCase(),
     );
-  return `${head(review ? "Good edits deserve a second look." : "Your moments, made short.", review ? "Watch each clip, check its subtitles and record your decision." : "Generated videos are private cloud outputs. They are separate from publications.")}<div class="toolbar"><div class="filters">${(review ? ["All", "Pending", "Approved", "Rejected"] : ["All"]).map((f) => `<button class="filter ${currentFilter === f ? "selected" : ""}" data-filter="${f}">${f}</button>`).join("")}</div><span class="badge gray">Uploads disabled</span></div>${clips.length ? `<div class="clip-grid">${clips.map((c) => `<article class="card clip-card"><div class="clip-frame"><video controls preload="metadata" src="/api/clips/${c.id}/video" aria-label="${esc(c.title)}"></video></div><div class="clip-info">${badge(c.review_status)}<h3>${esc(c.title)}</h3><p>${Math.round(c.duration)} seconds · Generated ${date(c.created_at)} · 7-day media retention</p><div class="actions"><a class="btn small" href="/api/clips/${c.id}/subtitles">${icon("download")} Subtitles</a><a class="btn small" href="/jobs/${c.job_id}" data-nav>Source & history</a></div>${review ? `<div class="actions"><button class="btn small primary" data-review="${c.id}" data-decision="APPROVED">${icon("check")} Approve</button><button class="btn small danger" data-review="${c.id}" data-decision="REJECTED">Reject</button></div><small style="display:block;margin-top:12px">Approval saves your decision. It never starts an upload.</small>` : ""}</div></article>`).join("")}</div>` : `<section class="card large-empty">${empty(review ? "shield" : "clips", review ? "Nothing waiting for review" : "No generated clips yet", review ? "Completed cloud jobs will appear here with a video preview, subtitles and source history." : "Clips appear only after a worker saves completed video and subtitle files. No sample clips are mixed into your library.", createLink)}</section>`}`;
+  return `${head(review ? "Good edits deserve a second look." : "Your moments, made short.", review ? "Watch each clip, check its subtitles and record your decision." : "Generated videos are private cloud outputs. They are separate from publications.")}<div class="toolbar"><div class="filters">${(review ? ["All", "Pending", "Approved", "Rejected"] : ["All"]).map((f) => `<button class="filter ${currentFilter === f ? "selected" : ""}" data-filter="${f}">${f}</button>`).join("")}</div><span class="badge gray">Uploads disabled</span></div>${clips.length ? `<div class="clip-grid">${clips.map((c) => `<article class="card clip-card"><div class="clip-frame"><video controls playsinline preload="metadata" data-preview="${c.id}" src="/api/clips/${c.id}/video" aria-label="${esc(c.title)}"></video></div><div class="clip-info"><div class="note amber" data-preview-error role="status" hidden></div>${badge(c.review_status)}<h3>${esc(c.title)}</h3>${metadataEditor(c)}<p>${Math.round(c.duration)} seconds · Generated ${date(c.created_at)} · 7-day media retention</p><div class="actions"><a class="btn small" href="/api/clips/${c.id}/subtitles">${icon("download")} Subtitles</a><a class="btn small" href="/jobs/${c.job_id}" data-nav>Source & history</a></div>${review ? `<div class="actions"><button class="btn small primary" data-review="${c.id}" data-decision="APPROVED">${icon("check")} Approve</button><button class="btn small danger" data-review="${c.id}" data-decision="REJECTED">Reject</button></div><small style="display:block;margin-top:12px">Approval saves your decision. It never starts an upload.</small>` : ""}</div></article>`).join("")}</div>` : `<section class="card large-empty">${empty(review ? "shield" : "clips", review ? "Nothing waiting for review" : "No generated clips yet", review ? "Completed cloud jobs will appear here with a video preview, subtitles and source history." : "Clips appear only after a worker saves completed video and subtitle files. No sample clips are mixed into your library.", createLink)}</section>`}`;
 }
 function publishing() {
   return `${head("Published means published.", "Only confirmed publication records belong here. Generated clips stay in your library.")}<div class="note section-space" style="margin-bottom:22px"><strong>Publishing remains disabled.</strong>Connecting an account or approving a clip does not authorize uploading. No publishing action is available in this release.</div><section class="card">${state.publications.length ? `<div class="table-wrap"><table><thead><tr><th>Clip</th><th>Status</th><th>Published</th><th>YouTube</th></tr></thead><tbody>${state.publications.map((p) => `<tr><td>${esc(p.title)}</td><td>${badge(p.state)}</td><td>${date(p.published_at)}</td><td>${p.youtube_id ? `<a href="https://www.youtube.com/watch?v=${encodeURIComponent(p.youtube_id)}" target="_blank" rel="noopener">View on YouTube ↗</a>` : "No confirmed video"}</td></tr>`).join("")}</tbody></table></div>` : empty("youtube", "No videos have been published", "This page will show confirmed upload results when publishing is explicitly enabled in a later phase. Approvals and generated clips are not counted as publications.", '<a href="/clips" data-nav class="btn">View generated clips →</a>')}</section>`;
@@ -345,7 +348,7 @@ function youtube() {
   return `${head("Your channel, securely connected.", "Connect through Google in the browser. Credentials stay encrypted in the cloud.")}<div class="two-col"><div class="stack"><section class="account-hero"><div class="youtube-mark">${icon("youtube")}</div><div><h2>${a ? esc(a.channel_title) : "Connect your YouTube channel"}</h2><p>${a ? "Channel ID: " + esc(a.channel_id) : "Choose the channel you want to associate with this workspace."}</p><span class="badge ${a ? "green" : "gray"}">${a ? "Connected" : "Not connected"}</span></div></section><section class="card"><div class="card-head"><h2>Account connection</h2><span class="badge gray">Publishing off</span></div><div class="card-body">${a ? `<p class="muted" style="font-size:12px">Connected ${date(a.connected_at)}. Your OAuth refresh token is encrypted and is never returned to the browser.</p><button class="btn danger section-space" data-action="disconnect">Remove saved connection</button>` : `<p class="muted" style="font-size:12px">Use Google’s authorization screen to select an account and channel. Connecting records account access; it does not enable uploads.</p>${state.oauth_configured ? '<a class="btn primary section-space" href="/api/youtube/connect" target="_top">Connect with Google →</a>' : '<div class="note amber section-space"><strong>Google OAuth setup required</strong>No Google client is configured for this cloud dashboard. Configure the account-level requirements below before connecting.</div><button class="btn section-space" disabled>Connect with Google · setup required</button>'}`}</div></section>${!state.oauth_configured ? `<section class="card"><div class="card-head"><h2>One-time cloud account setup</h2></div><div class="card-body prose"><ol><li>Enable YouTube Data API v3 in your Google Cloud project and create a <b>Web application</b> OAuth client.</li><li>Register this exact redirect URL:<br><code>${esc(location.origin)}/api/youtube/callback</code></li><li>Configure <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code> and a base64 32-byte <code>TOKEN_ENCRYPTION_KEY</code> as private hosted runtime values.</li><li>Configure the consent screen and your test user. Testing-mode refresh tokens can expire after seven days.</li></ol><p>Never paste credentials into this page, a job description or the source repository.</p></div></section>` : ""}</div><div class="stack"><div class="note"><strong>Connection is not publication.</strong>Uploads require a separate, explicit authorization. This dashboard cannot transition a job into publishing through this interface.</div><div class="card"><div class="card-head"><h2>Cloud security</h2></div><div class="card-body key-values"><div><span>Token storage</span><b>AES-GCM encrypted</b></div><div><span>Account records</span><b>Owner scoped</b></div><div><span>Sign-in</span><b>Private hosted access</b></div><div><span>Mac setup</span><b>None required</b></div></div></div></div></div>`;
 }
 function settings() {
-  return `${head("A workspace that works your way.", "Save your clipping defaults and check your cloud configuration.")}<div class="two-col"><div class="stack"><form class="card" id="settings-form"><div class="card-head"><h2>Clipping defaults</h2><span class="badge purple">Saved in the cloud</span></div><div class="card-body">${prefFields(state.preferences)}<div id="settings-error" class="error" role="alert"></div><div class="form-footer"><small>These defaults apply to new jobs. Existing jobs keep their recorded settings.</small><button class="btn primary">Save preferences</button></div></div></form><section class="card"><div class="card-head"><h2>Cloud worker</h2>${badge(state.worker ? "CREATED" : "QUEUED")}</div><div class="card-body"><div class="key-values"><div><span>Storage connection</span><b>${state.generation?.connection?.storage_verified ? "Verified " + date(state.generation.connection.storage_verified_at) : "Not verified"}</b></div><div><span>Last reported heartbeat</span><b>${state.worker ? date(state.worker.last_seen) : "No worker has reported"}</b></div><div><span>Inference</span><b>Whisper base · CPU / int8</b></div><div><span>Media limit</span><b>500 MiB · 30 minutes</b></div><div><span>Per-clip file limit</span><b>25 MiB</b></div><div><span>Publishing</span><b>Disabled</b></div></div><div class="note section-space"><strong>Processing needs a connected remote worker.</strong>The repository includes a GitHub Actions worker. It needs the private Site service credential and a separate worker secret in GitHub Actions, plus an enabled schedule on the default branch. These credentials are never entered into the dashboard.</div><a class="btn small section-space" href="https://github.com/Saisathwik045/purffle-shorts/blob/codex/cloud-free-clipping/docs/phase2-cloud-generation.md" target="_blank" rel="noopener">Cloud setup guide ↗</a></div></section></div><div class="stack"><section class="card"><div class="card-head"><h2>Cost & execution</h2></div><div class="card-body key-values"><div><span>Inference APIs</span><b>None</b></div><div><span>Video processing</span><b>Remote Linux CPU</b></div><div><span>Dashboard data</span><b>Private D1 database</b></div><div><span>Generated media</span><b>Private object storage</b></div></div></section><div class="note amber"><strong>Free allowances have limits.</strong>Public standard GitHub runners avoid paid inference. Storage, hosting and account limits must be checked in the provider accounts. Do not enable paid overages.</div><div class="note"><strong>Browser-only on your Mac.</strong>Viewing the dashboard and playing a clip require no local server, Python environment, Docker or ML model.</div></div></div>`;
+  return `${head("A workspace that works your way.", "Save your clipping defaults and check your cloud configuration.")}<div class="two-col"><div class="stack"><form class="card" id="settings-form"><div class="card-head"><h2>Clipping defaults</h2><span class="badge purple">Saved in the cloud</span></div><div class="card-body">${prefFields(state.preferences)}<div id="settings-error" class="error" role="alert"></div><div class="form-footer"><small>These defaults apply to new jobs. Existing jobs keep their recorded settings.</small><button class="btn primary">Save preferences</button></div></div></form><section class="card"><div class="card-head"><h2>Cloud worker</h2>${badge(state.worker ? "CREATED" : "QUEUED")}</div><div class="card-body"><div class="key-values"><div><span>Storage connection</span><b>${state.generation?.connection?.storage_verified ? "Verified " + date(state.generation.connection.storage_verified_at) : "Not verified"}</b></div><div><span>Last reported heartbeat</span><b>${state.worker ? date(state.worker.last_seen) : "No worker has reported"}</b></div><div><span>Inference</span><b>Whisper base · CPU / int8</b></div><div><span>Media limit</span><b>500 MiB · 30 minutes</b></div><div><span>Per-clip file limit</span><b>25 MiB</b></div><div><span>Publishing</span><b>Disabled</b></div></div><div class="note section-space"><strong>Processing needs a connected remote worker.</strong>No cloud processing provider is connected by default. The worker must have verified service permission, no-charge limits and a current private storage check before generation is enabled. Credentials stay in secure server settings.</div><a class="btn small section-space" href="https://github.com/Saisathwik045/purffle-shorts/blob/codex/phase2-6-worker-provider/docs/phase2-6-worker-feasibility.md" target="_blank" rel="noopener">Cloud setup guide ↗</a></div></section></div><div class="stack"><section class="card"><div class="card-head"><h2>Cost & execution</h2></div><div class="card-body key-values"><div><span>Inference APIs</span><b>None</b></div><div><span>Video processing</span><b>Remote Linux CPU</b></div><div><span>Dashboard data</span><b>Private D1 database</b></div><div><span>Generated media</span><b>Private object storage</b></div></div></section><div class="note amber"><strong>Free allowances have limits.</strong>Free compute pricing alone does not authorize application processing. Verify provider terms, storage, hosting and account limits without enabling paid overages.</div><div class="note"><strong>Browser-only on your Mac.</strong>Viewing the dashboard and playing a clip require no local server, Python environment, Docker or ML model.</div></div></div>`;
 }
 function render() {
   if (!state) return;
@@ -474,6 +477,23 @@ document.addEventListener("click", async (e) => {
     await lookup();
     return;
   }
+  const preparation = e.target.closest("[data-prepare]");
+  if (preparation) {
+    preparation.disabled = true;
+    try {
+      const c = state.clips.find((clip) => clip.id === preparation.dataset.prepare);
+      if (!c) throw new Error("Refresh the clip library before preparing metadata.");
+      const data = await post("/api/clips/" + c.id + "/preparation", { expected_hash: c.metadata_hash });
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = "publishing-preparation-" + c.id + ".json";
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("Preparation downloaded. It does not authorize an upload.");
+    } catch (error) { toast(error.message); }
+    finally { preparation.disabled = false; }
+    return;
+  }
   const wake = e.target.closest("[data-wake]");
   const remove = e.target.closest("[data-cleanup]");
   if (wake || remove) {
@@ -508,6 +528,7 @@ document.addEventListener("click", async (e) => {
       review.disabled = true;
       await post(`/api/clips/${review.dataset.review}/review`, {
         decision: review.dataset.decision,
+        expected_hash: state.clips.find((clip) => clip.id === review.dataset.review)?.metadata_hash,
       });
       toast("Review decision saved. Nothing was uploaded.");
       await load();
@@ -523,8 +544,68 @@ document.addEventListener("click", async (e) => {
     if (review) review.disabled = false;
   }
 });
+document.addEventListener(
+  "error",
+  async (event) => {
+    const video = event.target;
+    if (!(video instanceof HTMLVideoElement) || !video.dataset.preview) return;
+    const box = video
+      .closest(".clip-card")
+      ?.querySelector("[data-preview-error]");
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = "Checking private video availability…";
+    try {
+      const result = await fetch(`/api/clips/${video.dataset.preview}/video`, {
+        method: "HEAD",
+        credentials: "same-origin",
+        redirect: "error",
+      });
+      const messages = {
+        401: "Your session has ended. Refresh this page and sign in again to view the private clip.",
+        403: "Private clip access was denied. Refresh this page to check your sign-in.",
+        404: "This clip is no longer available. Open Source & history to check its job.",
+        410: "The clip expired or its file is missing. Open Source & history to review cleanup and regeneration with current source rights.",
+        429: "The private storage request limit was reached. Check cloud usage before retrying playback.",
+        503: "Private media serving is paused. Check account allowances and cloud configuration in Settings.",
+      };
+      box.textContent =
+        messages[result.status] ||
+        "Playback could not start. Retry the preview or open Source & history to review the cloud result.";
+      if (result.ok) {
+        const retry = document.createElement("button");
+        retry.className = "btn small section-space";
+        retry.textContent = "Retry preview";
+        retry.onclick = () => {
+          box.hidden = true;
+          video.load();
+        };
+        box.append(document.createElement("br"), retry);
+      }
+    } catch {
+      box.textContent =
+        "The private video connection failed or sign-in is required. Refresh the page, then check Source & history if playback still fails.";
+    }
+  },
+  true,
+);
 document.addEventListener("submit", async (e) => {
   const form = e.target;
+  if (form.matches("[data-metadata-clip]")) {
+    e.preventDefault();
+    const button = form.querySelector("button[type=submit]");
+    const errorEl = form.querySelector(".error");
+    button.disabled = true; errorEl.textContent = "";
+    try {
+      const values = new FormData(form);
+      await post("/api/clips/" + form.dataset.metadataClip + "/metadata", {
+        title: values.get("title"), description: values.get("description"), expected_hash: form.dataset.metadataHash,
+      });
+      toast("Metadata saved. Changed metadata requires a new approval; nothing was uploaded.");
+      await load();
+    } catch (error) { errorEl.textContent = error.message; button.disabled = false; }
+    return;
+  }
   if (!["new-job-form", "auth-form", "settings-form"].includes(form.id)) return;
   e.preventDefault();
   const button = form.querySelector("button[type=submit],.form-footer button");

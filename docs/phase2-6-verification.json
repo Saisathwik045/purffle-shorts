@@ -1,0 +1,59 @@
+{
+  "phase": "2.6",
+  "checked_date": "2026-11-18",
+  "base_pr": 3,
+  "base_sha": "a0036b5b1a3215590c7aa51fa622f6026d2e51cb",
+  "implementation_status": "draft_unverified",
+  "production_generation": "BLOCKED",
+  "provider_selected": null,
+  "site": {
+    "project_id": "appgprj_6afd2846709481918878ee21703805c9",
+    "status": "active",
+    "version": 8,
+    "worker_heartbeat_rows": 0,
+    "clips": 0,
+    "jobs_awaiting_source_authorization": 1,
+    "environment_revision": 1,
+    "configured_key_names": [
+      "WORKER_TOKEN"
+    ]
+  },
+  "production_storage_roundtrip": "NOT_VERIFIED",
+  "production_video_preview": "NOT_VERIFIED",
+  "codex_cloud_tests": "PENDING_TASK_CREATION_TOOL_RESPONSE",
+  "mac_processing": false,
+  "mac_tests": false,
+  "paid_resources_created": false,
+  "publishing_enabled": false,
+  "preserved": [
+    "clipping",
+    "Whisper transcription",
+    "FFmpeg rendering",
+    "subtitles",
+    "highlight selection",
+    "PR #3 seeking and playback fixes"
+  ],
+  "next_step": "Run and complete cloud-only tests before deploying this draft. Account/provider authorization is still required before enabling production generation.",
+  "cloud_task_creation_authorized": true,
+  "repository_ci": {
+    "tested_code_commit": "944e024ce1f171d1c044069e22f1eaf0c799b969",
+    "run_url": "https://github.com/Saisathwik045/purffle-shorts/actions/runs/44357274725",
+    "node_tests": {
+      "passed": 33,
+      "failed": 0
+    },
+    "javascript_syntax": "PASS",
+    "dashboard_build": "PASS",
+    "synthetic_generation": {
+      "status": "PASS",
+      "width": 720,
+      "height": 1280,
+      "duration_seconds": 10.57,
+      "subtitle_cues": 13,
+      "storage": "isolated SQLite/filesystem, NOT production D1/R2",
+      "private_range_preview": true,
+      "full_decode": true,
+      "publishing": "disabled"
+    }
+  }
+}

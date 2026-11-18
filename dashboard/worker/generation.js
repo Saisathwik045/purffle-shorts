@@ -1,30 +1,21 @@
 import { Problem } from "./domain.js";
+import { providerConfiguration, freshHeartbeat, dispatchToProvider } from "./providers.js";
 export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
 export const MAX_SUBTITLE_BYTES = 1024 * 1024;
 export const STORAGE_BUDGET = 512 * 1024 * 1024;
 export const RETENTION_DAYS = 7;
-const REPO = "Saisathwik045/purffle-shorts";
 export async function credentialHash(env) {
-  const bytes = new TextEncoder().encode(env.WORKER_TOKEN || "");
+  const bytes = new TextEncoder().encode(JSON.stringify([env.WORKER_TOKEN || "", env.WORKER_PROVIDER || "none", env.WORKER_DISPATCH_URL || "", env.WORKER_DISPATCH_HOST || ""]));
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash), (x) =>
     x.toString(16).padStart(2, "0"),
   ).join("");
 }
 export async function generationStatus(env, db) {
-  const blockers = [];
-  if (env.ACTIONS_APP_USE_AUTHORIZED !== "true")
-    blockers.push(
-      "GitHub provider authorization for application-backend processing has not been verified. Free runner pricing alone does not authorize this use.",
-    );
+  const config = providerConfiguration(env);
+  const blockers = [...config.blockers];
   if (env.FREE_TIER_VERIFIED !== "true")
-    blockers.push(
-      "Account free allowances and stop-spending settings have not been verified. Cloud processing is paused.",
-    );
-  if (!env.GITHUB_DISPATCH_TOKEN)
-    blockers.push(
-      "Configure a repository-scoped GitHub token with Actions write permission in the private Site runtime.",
-    );
+    blockers.push("Account storage/hosting free allowances and stop-spending settings have not been verified. Cloud processing is paused.");
   const proof = db
     ? await db
         .prepare(
@@ -33,6 +24,9 @@ export async function generationStatus(env, db) {
         .bind("cpu")
         .first()
     : null;
+  const worker_active = freshHeartbeat(proof?.last_seen);
+  if (!worker_active)
+    blockers.push("No authenticated worker heartbeat within the last 15 minutes. Generation remains paused.");
   const checked = Date.parse(proof?.storage_verified_at || "");
   const storage_verified =
     !!env.WORKER_TOKEN &&
@@ -47,6 +41,8 @@ export async function generationStatus(env, db) {
   return {
     enabled: !blockers.length,
     blockers,
+    provider: config.provider,
+    worker_active,
     connection: {
       last_seen: proof?.last_seen || null,
       storage_verified,
@@ -93,49 +89,9 @@ export async function charge(db, kind, limit) {
 export async function dispatch(env, db, jobId) {
   await requireGeneration(env, db);
   await charge(db, "dispatch", 200);
-  const headers = {
-    Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "Purffle-Cloud-Dashboard",
-  };
-  const repo = await fetch(`https://api.github.com/repos/${REPO}`, {
-    headers,
-    signal: AbortSignal.timeout(10000),
-    redirect: "error",
-  });
-  if (!repo.ok)
-    throw new Problem(
-      "GitHub repository access failed. Check the Actions token; no dispatch was confirmed.",
-      502,
-    );
-  const info = await repo.json();
-  if (
-    info.private !== false ||
-    info.full_name?.toLowerCase() !== REPO.toLowerCase()
-  )
-    throw new Problem(
-      "Cloud generation requires this public repository and a standard free GitHub runner.",
-      403,
-    );
-  const response = await fetch(
-    `https://api.github.com/repos/${REPO}/actions/workflows/dashboard-worker.yml/dispatches`,
-    {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ref: info.default_branch,
-        inputs: { job_id: jobId },
-      }),
-      signal: AbortSignal.timeout(10000),
-      redirect: "error",
-    },
-  );
-  if (response.status !== 204)
-    throw new Problem(
-      "GitHub did not confirm the cloud job. Ensure the workflow is merged and Actions permissions/secrets are configured; use safe retry after correcting setup.",
-      502,
-    );
+  const job = await db.prepare("SELECT id,attempt FROM jobs WHERE id=? AND state='QUEUED'").bind(jobId).first();
+  if (!job) throw new Problem("Only an existing queued job can wake a cloud worker.", 409);
+  await dispatchToProvider(env, job);
   await db
     .prepare("UPDATE jobs SET dispatch_status=?,dispatch_error=NULL WHERE id=?")
     .bind("ACCEPTED", jobId)

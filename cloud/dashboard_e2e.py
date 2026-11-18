@@ -69,6 +69,16 @@ def main():
             assert video.status_code == 200 and video.headers["Content-Type"] == "video/mp4"
             ranged = owner.get(origin + media_path, headers={"Range": "bytes=0-1023"})
             assert ranged.status_code == 206 and ranged.content == video.content[:1024]
+            head = owner.head(origin + media_path)
+            assert head.status_code == 200 and not head.content
+            assert int(head.headers["Content-Length"]) == len(video.content)
+            assert requests.head(origin + media_path).status_code == 401
+            assert requests.head(origin + media_path, headers={"X-Test-Owner": "another-owner"}).status_code == 404
+            suffix = owner.get(origin + media_path, headers={"Range": "bytes=-128"})
+            assert suffix.status_code == 206 and suffix.content == video.content[-128:]
+            invalid = owner.get(origin + media_path, headers={"Range": f"bytes={len(video.content)}-"})
+            assert invalid.status_code == 416 and invalid.headers["Content-Range"] == f"bytes */{len(video.content)}"
+
             rendered = root / "verified-short.mp4"
             rendered.write_bytes(video.content)
             info = ffmpeg.probe(rendered)

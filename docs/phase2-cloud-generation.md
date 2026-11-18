@@ -1,3 +1,5 @@
+> **Historical activation guide — superseded by Phase 2.6.** Do not enable the GitHub Actions application backend or follow its old activation steps. Read [the current provider feasibility report](phase2-6-worker-feasibility.md) and [provider-neutral contract](worker-provider-contract.md). Production remains blocked until account, cloud and storage verification actually pass.
+
 # Phase 2: real cloud generation
 
 Private dashboard: https://purffle-shorts-cloud.turfylamb4.chatgpt.site
