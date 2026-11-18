@@ -1,5 +1,6 @@
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { metadataHash } from "../worker/review.js";
 import assert from "node:assert/strict";
 import { D1 } from "./support/d1.js";
 import { api } from "../worker/index.js";
@@ -36,16 +37,20 @@ function context() {
     )
     .run(
       new Date().toISOString(),
-      createHash("sha256").update("worker-test-secret").digest("hex"),
+      createHash("sha256").update(JSON.stringify(["worker-test-secret", "https", "https://worker.example.org/dispatches", "worker.example.org"])).digest("hex"),
       new Date().toISOString(),
     );
   return {
     DB,
     WORKER_TOKEN: "worker-test-secret",
     // Isolated development/test harness, not provider authorization for production.
-    ACTIONS_APP_USE_AUTHORIZED: "true",
+    WORKER_PROVIDER: "https",
+    WORKER_BACKEND_AUTHORIZED: "true",
+    WORKER_NO_CHARGE_VERIFIED: "true",
+    WORKER_DISPATCH_URL: "https://worker.example.org/dispatches",
+    WORKER_DISPATCH_HOST: "worker.example.org",
+    WORKER_DISPATCH_TOKEN: "isolated-dispatch-token-not-a-secret-32",
     FREE_TIER_VERIFIED: "true",
-    GITHUB_DISPATCH_TOKEN: "test-token",
     WORKER_CONNECTION_VERIFIED_AT: new Date().toISOString(),
     BUCKET: {
       async put() {},
@@ -82,20 +87,21 @@ async function call(
   user = "owner",
   headers = {},
 ) {
+  // Existing success-path fixtures review the current metadata. Negative tests supply stale hashes explicitly.
+  if (path.endsWith("/review") && data && !Object.hasOwn(data, "expected_hash")) {
+    const clip = env.DB.db.prepare("SELECT * FROM clips WHERE id=?").get(path.split("/")[3]);
+    if (clip) data = { ...data, expected_hash: await metadataHash(clip) };
+  }
   return api(request(path, method, data, user, headers), env);
 }
 const workerHeaders = { Authorization: "Bearer worker-test-secret" };
 const stageHeaders = (lease) => ({ ...workerHeaders, "x-job-lease": lease });
 // Metadata availability must never be needed to create or authorize a job.
-globalThis.fetch = async (url) => {
-  if (String(url).endsWith("/repos/Saisathwik045/purffle-shorts"))
-    return Response.json({
-      private: false,
-      full_name: "Saisathwik045/purffle-shorts",
-      default_branch: "main",
-    });
-  if (String(url).endsWith("/dispatches"))
-    return new Response(null, { status: 204 });
+globalThis.fetch = async (url, init) => {
+  if (String(url) === "https://worker.example.org/dispatches") {
+    const payload = JSON.parse(init.body);
+    return Response.json({ accepted: true, contract: payload.contract, job_id: payload.job_id, attempt: payload.attempt }, { status: 202 });
+  }
   throw new Error("Metadata unavailable");
 };
 test("canonical URLs and options reject ambiguous or unsupported input", () => {
@@ -397,13 +403,13 @@ test("generation fails closed without verified account limits; private settings 
   assert.equal(status.generation.enabled, false);
   assert.equal(status.jobs[0].state, "AWAITING_SOURCE_AUTHORIZATION");
 });
-test("production Actions backend requires provider authorization separately from free billing", async () => {
+test("cloud backend requires provider authorization separately from free billing", async () => {
   const env = context();
-  delete env.ACTIONS_APP_USE_AUTHORIZED;
+  delete env.WORKER_BACKEND_AUTHORIZED;
   const waiting = await (await call(env, "/api/jobs", "POST", input())).json();
   await assert.rejects(
     call(env, `/api/jobs/${waiting.id}/authorization`, "POST", auth()),
-    (e) => e.status === 503 && /provider authorization/i.test(e.message),
+    (e) => e.status === 503 && /provider.*permission/i.test(e.message),
   );
   const status = await (await call(env, "/api/bootstrap")).json();
   assert.equal(status.generation.enabled, false);
@@ -515,7 +521,7 @@ test("private clip cleanup removes partial objects and preserves failure history
 test("private connection can be verified before production generation is enabled", async () => {
   const env = context();
   env.FREE_TIER_VERIFIED = "false";
-  delete env.GITHUB_DISPATCH_TOKEN;
+  delete env.WORKER_DISPATCH_TOKEN;
   delete env.WORKER_CONNECTION_VERIFIED_AT;
   const response = await (
     await call(env, "/api/worker/health", "POST", {}, null, workerHeaders)
@@ -656,4 +662,46 @@ test("future and expired persisted storage proofs fail closed", async () => {
       false,
     );
   }
+});
+
+function reviewFixture() {
+  const env = context(), timestamp = new Date().toISOString();
+  env.DB.db.prepare("INSERT INTO jobs(id,owner,fingerprint,source_url,source_kind,title,options,authorization,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run("review-job", "owner", "review-source", "https://www.youtube.com/watch?v=abcdefghijk", "video", "Source", JSON.stringify(input().options), JSON.stringify(auth()), "READY_FOR_REVIEW", timestamp, timestamp);
+  env.DB.db.prepare("INSERT INTO clips(id,job_id,owner,attempt,position,title,description,duration,video_key,subtitle_key,review_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run("review-clip", "review-job", "owner", 1, 1, "Original title", "Original description", 30, "private/video", "private/subtitles", "PENDING", timestamp);
+  return env;
+}
+test("owner metadata editing invalidates approval and stale revisions", async () => {
+  const env = reviewFixture();
+  let c = (await (await call(env, "/api/bootstrap")).json()).clips[0];
+  const oldHash = c.metadata_hash;
+  await call(env, "/api/clips/review-clip/review", "POST", { decision: "APPROVED", expected_hash: oldHash });
+  c = (await (await call(env, "/api/bootstrap")).json()).clips[0];
+  assert.equal(c.review_status, "APPROVED");
+  await assert.rejects(call(env, "/api/clips/review-clip/metadata", "POST",
+    { title: "Changed title", description: "Changed description", expected_hash: oldHash }), (e) => e.status === 409);
+  await call(env, "/api/clips/review-clip/metadata", "POST",
+    { title: "Changed title", description: "Changed description", expected_hash: c.metadata_hash });
+  const bootstrap = await (await call(env, "/api/bootstrap")).json();
+  assert.equal(bootstrap.clips[0].title, "Changed title");
+  assert.equal(bootstrap.clips[0].review_status, "PENDING");
+  assert.equal(bootstrap.jobs[0].state, "READY_FOR_REVIEW");
+  assert.equal(bootstrap.publishing_enabled, false);
+  await assert.rejects(call(env, "/api/clips/review-clip/metadata", "POST",
+    { title: "Other", description: "", expected_hash: bootstrap.clips[0].metadata_hash }, "other-owner"), (e) => e.status === 404);
+});
+test("publishing preparation is owner-only, read-only and never an upload grant", async () => {
+  const env = reviewFixture();
+  const c = (await (await call(env, "/api/bootstrap")).json()).clips[0];
+  const body = { expected_hash: c.metadata_hash };
+  const plan = await (await call(env, "/api/clips/review-clip/preparation", "POST", body)).json();
+  assert.equal(plan.schema, "purffle.publish-preparation.v1");
+  assert.equal(plan.execution_authorized, false);
+  assert.equal(plan.upload_enabled, false);
+  assert.equal(plan.storage_roundtrip_verified, false);
+  assert(!JSON.stringify(plan).includes("private/video"));
+  assert.equal(env.DB.db.prepare("SELECT COUNT(*) n FROM publications").get().n, 0);
+  await assert.rejects(call(env, "/api/clips/review-clip/preparation", "POST", body, "other-owner"), (e) => e.status === 404);
+  await assert.rejects(call(env, "/api/clips/review-clip/publish", "POST", {}), (e) => e.status === 403);
 });

@@ -1,3 +1,4 @@
+import { metadataHash, reviewedMetadata, expectedMetadata, publishingPreparation } from "./review.js";
 import { serveMedia } from "./media.js";
 import {
   generationStatus,
@@ -218,6 +219,8 @@ export async function api(request, env) {
     );
   if (path.startsWith("/api/worker/")) {
     await workerAuth(request, env);
+    // Authenticated callbacks renew liveness; they never create a storage proof.
+    await statement(db, "INSERT INTO worker_heartbeats(id,last_seen) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen", "cpu", now()).run();
     if (request.method === "POST" && path === "/api/worker/health") {
       await body(request);
       const checked_at = now();
@@ -619,7 +622,7 @@ export async function api(request, env) {
     );
     return json({
       jobs,
-      clips,
+      clips: await Promise.all(clips.map(async (clip) => ({ ...clip, metadata_hash: await metadataHash(clip) }))),
       publications,
       account,
       preferences: preferences ? JSON.parse(preferences.preferences) : DEFAULTS,
@@ -883,12 +886,12 @@ export async function api(request, env) {
     }
   }
   const clipRoute = path.match(
-    /^\/api\/clips\/([\w-]+)\/(review|video|subtitles|publish)$/,
+    /^\/api\/clips\/([\w-]+)\/(review|metadata|preparation|video|subtitles|publish)$/,
   );
   if (clipRoute) {
     const c = await one(
       db,
-      "SELECT c.*,j.state AS job_state,j.attempt AS current_attempt FROM clips c JOIN jobs j ON j.id=c.job_id WHERE c.id=? AND c.owner=?",
+      "SELECT c.*,j.state AS job_state,j.attempt AS current_attempt,j.authorization AS source_authorization FROM clips c JOIN jobs j ON j.id=c.job_id WHERE c.id=? AND c.owner=?",
       clipRoute[1],
       owner,
     );
@@ -905,8 +908,33 @@ export async function api(request, env) {
         "Publishing remains disabled. Connection and review do not authorize uploads.",
         403,
       );
+    if (clipRoute[2] === "metadata" && request.method === "POST") {
+      if (!["READY_FOR_REVIEW", "APPROVED"].includes(c.job_state))
+        throw new Problem("This clip cannot be edited in its current state.", 409);
+      const input = await body(request);
+      await expectedMetadata(input, c);
+      const edited = reviewedMetadata(input);
+      if (edited.title === c.title && edited.description === c.description)
+        return json({ saved: false, unchanged: true, metadata_hash: await metadataHash(c) });
+      const changed = await one(db,
+        "UPDATE clips SET title=?,description=?,review_status='PENDING',reviewed_at=NULL WHERE id=? AND owner=? AND attempt=? AND title=? AND description=? AND review_status=? AND reviewed_at IS ? AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=clips.job_id AND j.attempt=clips.attempt AND j.state IN ('READY_FOR_REVIEW','APPROVED')) RETURNING id",
+        edited.title, edited.description, c.id, owner, c.attempt, c.title, c.description, c.review_status, c.reviewed_at || null);
+      if (!changed) throw new Problem("This clip changed. Refresh before editing again.", 409);
+      await db.batch([
+        statement(db, "UPDATE jobs SET state='READY_FOR_REVIEW',updated_at=? WHERE id=? AND attempt=? AND state IN ('READY_FOR_REVIEW','APPROVED')", now(), c.job_id, c.attempt),
+        event(db, c.job_id, "READY_FOR_REVIEW", "Owner edited clip metadata. Previous approval was cleared; uploads remain disabled.", c.attempt),
+      ]);
+      return json({ saved: true, review_status: "PENDING", publishing_enabled: false });
+    }
+    if (clipRoute[2] === "preparation" && request.method === "POST") {
+      const input = await body(request);
+      await expectedMetadata(input, c);
+      const channel = await one(db, "SELECT channel_id FROM youtube_accounts WHERE owner=?", owner);
+      return json(await publishingPreparation(c, c.source_authorization ? JSON.parse(c.source_authorization) : null, channel));
+    }
     if (clipRoute[2] === "review" && request.method === "POST") {
       const input = await body(request);
+      await expectedMetadata(input, c);
       if (
         !["APPROVED", "REJECTED"].includes(input.decision) ||
         !["READY_FOR_REVIEW", "APPROVED"].includes(c.job_state)
@@ -915,14 +943,10 @@ export async function api(request, env) {
           "This clip cannot be reviewed in its current state.",
           409,
         );
-      await statement(
-        db,
-        "UPDATE clips SET review_status=?,reviewed_at=? WHERE id=? AND owner=?",
-        input.decision,
-        now(),
-        c.id,
-        owner,
-      ).run();
+      const reviewed = await one(db,
+        "UPDATE clips SET review_status=?,reviewed_at=? WHERE id=? AND owner=? AND attempt=? AND title=? AND description=? AND review_status=? AND reviewed_at IS ? AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=clips.job_id AND j.attempt=clips.attempt AND j.state IN ('READY_FOR_REVIEW','APPROVED')) RETURNING id",
+        input.decision, now(), c.id, owner, c.attempt, c.title, c.description, c.review_status, c.reviewed_at || null);
+      if (!reviewed) throw new Problem("Clip metadata changed before review. Refresh this clip.", 409);
       const counts = await one(
         db,
         "SELECT SUM(review_status='PENDING') pending,SUM(review_status='APPROVED') approved FROM clips WHERE job_id=? AND attempt=?",

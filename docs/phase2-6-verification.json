@@ -1,0 +1,33 @@
+{
+  "phase": "2.6",
+  "checked_date": "2026-11-18",
+  "base_pr": 3,
+  "base_sha": "a0036b5b1a3215590c7aa51fa622f6026d2e51cb",
+  "implementation_status": "draft_unverified",
+  "production_generation": "BLOCKED",
+  "provider_selected": null,
+  "site": {
+    "project_id": "appgprj_6afd2846709481918878ee21703805c9",
+    "status": "active",
+    "version": 8,
+    "worker_heartbeat_rows": 0,
+    "clips": 0,
+    "jobs_awaiting_source_authorization": 1
+  },
+  "production_storage_roundtrip": "NOT_VERIFIED",
+  "production_video_preview": "NOT_VERIFIED",
+  "codex_cloud_tests": "PENDING_SEPARATE_CLOUD_TASK_PERMISSION",
+  "mac_processing": false,
+  "mac_tests": false,
+  "paid_resources_created": false,
+  "publishing_enabled": false,
+  "preserved": [
+    "clipping",
+    "Whisper transcription",
+    "FFmpeg rendering",
+    "subtitles",
+    "highlight selection",
+    "PR #3 seeking and playback fixes"
+  ],
+  "next_step": "Run and complete cloud-only tests before deploying this draft. Account/provider authorization is still required before enabling production generation."
+}
