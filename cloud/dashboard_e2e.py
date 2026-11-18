@@ -26,7 +26,7 @@ def main():
                     "-i", str(Path(__file__).parent / "fixtures" / "synthetic-speech.opus"), "-c:v", "libx264",
                     "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(source)])
         env = dict(os.environ, PURFFLE_E2E_ROOT=str(root))
-        backend = subprocess.Popen(["node", "scripts/e2e-server.mjs"], cwd="dashboard", env=env)
+        backend = subprocess.Popen(["node", "scripts/e2e-server.mjs"], cwd="dashboard", env=env, stdout=subprocess.DEVNULL)
         try:
             for _ in range(100):
                 if (root / "origin").exists():
@@ -104,10 +104,12 @@ def main():
             print("PURFFLE_E2E_REPORT " + json.dumps(report), flush=True)
             # Logs are free of Actions artifact-storage charges. Only original synthetic output is emitted.
             assert len(video.content) <= 2 * 1024 * 1024, "Verification sample too large for a bounded log export"
+            os.set_blocking(1, True)
             print("PURFFLE_E2E_MEDIA_BEGIN", flush=True)
             encoded = base64.b64encode(video.content).decode()
-            for start in range(0, len(encoded), 4096):
-                print("PURFFLE_E2E_MEDIA " + encoded[start:start+4096], flush=True)
+            for start in range(0, len(encoded), 2048):
+                print("PURFFLE_E2E_MEDIA " + encoded[start:start+2048], flush=True)
+                time.sleep(0.01)
             print("PURFFLE_E2E_MEDIA_END", flush=True)
         finally:
             backend.terminate()
