@@ -96,6 +96,7 @@ def test_transient_upload_retry_rewinds_same_file(monkeypatch):
 
 
 def test_cpu_model_preparation_uses_existing_complete_snapshot_downloader(tmp_path, monkeypatch):
+    monkeypatch.setenv("PURFFLE_WHISPER_MODEL_PATH", "")
     import sys
 
     from purffle_shorts import whisper_assets

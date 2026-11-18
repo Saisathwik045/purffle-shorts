@@ -30,6 +30,8 @@ function context() {
   return {
     DB: new D1(),
     WORKER_TOKEN: "worker-test-secret",
+    // Isolated development/test harness, not provider authorization for production.
+    ACTIONS_APP_USE_AUTHORIZED: "true",
     FREE_TIER_VERIFIED: "true",
     GITHUB_DISPATCH_TOKEN: "test-token",
     WORKER_CONNECTION_VERIFIED_AT: new Date().toISOString(),
@@ -383,6 +385,18 @@ test("generation fails closed without verified account limits; private settings 
   assert.equal(status.generation.enabled, false);
   assert.equal(status.jobs[0].state, "AWAITING_SOURCE_AUTHORIZATION");
 });
+test("production Actions backend requires provider authorization separately from free billing", async () => {
+  const env = context();
+  delete env.ACTIONS_APP_USE_AUTHORIZED;
+  const waiting = await (await call(env, "/api/jobs", "POST", input())).json();
+  await assert.rejects(
+    call(env, `/api/jobs/${waiting.id}/authorization`, "POST", auth()),
+    (e) => e.status === 503 && /provider authorization/i.test(e.message),
+  );
+  const status = await (await call(env, "/api/bootstrap")).json();
+  assert.equal(status.generation.enabled, false);
+  assert.equal(status.jobs[0].state, "AWAITING_SOURCE_AUTHORIZATION");
+});
 test("storage reservations are atomic and monthly operation budgets stop extra work", async () => {
   const env = context();
   const opts = { ...input().options, count: 10 };
@@ -501,4 +515,30 @@ test("private connection can be verified before production generation is enabled
     (await (await call(env, "/api/bootstrap")).json()).generation.enabled,
     false,
   );
+});
+test("an ambiguous dispatch never reports a regression after a real worker claim", async () => {
+  const env = context();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, ...args) => {
+    if (String(url).endsWith("/dispatches")) {
+      await call(env, "/api/worker/claim", "POST", {}, null, workerHeaders);
+      throw new Error("Dispatch response connection lost");
+    }
+    return original(url, ...args);
+  };
+  try {
+    const result = await (
+      await call(env, "/api/jobs", "POST", {
+        ...input(),
+        authorization: auth(),
+      })
+    ).json();
+    assert.equal(result.state, "VALIDATING");
+    assert.equal(result.dispatch_status, "UNCONFIRMED");
+    const actual = await (await call(env, `/api/jobs/${result.id}`)).json();
+    assert.equal(actual.job.state, "VALIDATING");
+    assert.equal(actual.events.at(-1).state, "VALIDATING");
+  } finally {
+    globalThis.fetch = original;
+  }
 });

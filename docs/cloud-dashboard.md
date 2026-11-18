@@ -1,3 +1,5 @@
+> Phase 1 historical guide. The current dispatch, cost guards, cleanup, account setup and verified real cloud generation are documented in [Phase 2](phase2-cloud-generation.md).
+
 # Purffle Cloud Dashboard — Phase 1
 
 Open the private hosted dashboard:

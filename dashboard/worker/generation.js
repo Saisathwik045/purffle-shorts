@@ -6,6 +6,14 @@ export const RETENTION_DAYS = 7;
 const REPO = "Saisathwik045/purffle-shorts";
 export function generationStatus(env) {
   const blockers = [];
+  if (env.ACTIONS_APP_USE_AUTHORIZED !== "true")
+    blockers.push(
+      "GitHub provider authorization for application-backend processing has not been verified. Free runner pricing alone does not authorize this use.",
+    );
+  if (env.ACTIONS_APP_USE_AUTHORIZED !== "true")
+    blockers.push(
+      "Production Actions processing requires documented GitHub authorization for this application-backend use. CI tests remain available.",
+    );
   if (env.FREE_TIER_VERIFIED !== "true")
     blockers.push(
       "Account free allowances and stop-spending settings have not been verified. Cloud processing is paused.",

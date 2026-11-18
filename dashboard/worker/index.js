@@ -193,14 +193,15 @@ async function launch(env, db, id, count, attempt = 1, reset = false) {
       error.message,
       id,
     ).run();
+    const actual = await one(db, "SELECT state FROM jobs WHERE id=?", id);
     await event(
       db,
       id,
-      "QUEUED",
+      actual?.state || "QUEUED",
       "Worker dispatch was not confirmed. Check connection settings and retry waking this same job.",
       attempt,
     ).run();
-    return { state: "QUEUED", dispatch_status: "UNCONFIRMED" };
+    return { state: actual?.state || "QUEUED", dispatch_status: "UNCONFIRMED" };
   }
   return { state: "QUEUED", dispatch_status: "ACCEPTED" };
 }
@@ -604,7 +605,7 @@ export async function api(request, env) {
     const id = uuid(),
       stamp = now(),
       meta = await metadata(source.url),
-      state = auth ? "CREATED" : "AWAITING_SOURCE_AUTHORIZATION";
+      state = auth ? "VALIDATING" : "AWAITING_SOURCE_AUTHORIZATION";
     try {
       await db.batch([
         statement(

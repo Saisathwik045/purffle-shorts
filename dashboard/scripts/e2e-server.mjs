@@ -1,104 +1,647 @@
-// Isolated integration harness on a GitHub Linux runner. Never deployed or exposed publicly.
-import http from "node:http";
-import { mkdir, readFile, writeFile, stat, rm } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
-import { D1 } from "../tests/support/d1.js";
-import worker from "../dist/server/index.js";
-const root = resolve(process.env.PURFFLE_E2E_ROOT);
-await mkdir(root, { recursive: true });
-const db = new D1();
-const bucket = {
-  async put(key, body) {
-    const path = resolve(root, "objects", key);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, Buffer.from(await new Response(body).arrayBuffer()));
-  },
-  async delete(keys) {
-    for (const key of Array.isArray(keys) ? keys : [keys])
-      await rm(resolve(root, "objects", key), { force: true });
-  },
-  async get(key, opts) {
-    let bytes;
-    try {
-      bytes = await readFile(resolve(root, "objects", key));
-    } catch {
-      return null;
-    }
-    const size = bytes.length;
-    const range = opts?.range?.get("range")?.match(/^bytes=(\d+)-(\d*)$/);
-    let info;
-    if (range) {
-      const offset = Number(range[1]);
-      const end = range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
-      bytes = bytes.subarray(offset, end + 1);
-      info = { offset, length: bytes.length };
-    }
-    return {
-      body: bytes,
-      size,
-      range: info,
-      writeHttpMetadata(headers) {
-        headers.set(
-          "Content-Type",
-          key.endsWith(".mp4") ? "video/mp4" : "application/x-subrip",
+// Isolated integration harness on a GitHub Linux runner. Never deployed or exposed …11253 tokens truncated… Problem(
+          "Finish rendering before saving generated clips.",
+          409,
         );
+      if (match[2] === "clips") {
+        if (
+          !Number.isInteger(input.position) ||
+          input.position < 1 ||
+          input.position > j.options.count ||
+          typeof input.title !== "string" ||
+          !input.title.trim() ||
+          !Number.isFinite(input.duration) ||
+          input.duration <= 0 ||
+          input.duration > 180
+        )
+          throw new Problem("Invalid generated clip metadata.");
+        const previous = await one(
+          db,
+          "SELECT id FROM clips WHERE job_id=? AND attempt=? AND position=?",
+          j.id,
+          j.attempt,
+          input.position,
+        );
+        if (previous) return json({ id: previous.id });
+        const id = uuid();
+        await statement(
+          db,
+          "INSERT INTO clips(id,job_id,owner,attempt,position,title,description,duration,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+          id,
+          j.id,
+          j.owner,
+          j.attempt,
+          input.position,
+          input.title.slice(0, 100),
+          String(input.description || "").slice(0, 3500) +
+            "\n\n" +
+            j.authorization.attribution,
+          input.duration,
+          now(),
+        ).run();
+        return json({ id }, 201);
+      }
+      const clips = await all(
+        db,
+        "SELECT * FROM clips WHERE job_id=? AND attempt=?",
+        j.id,
+        j.attempt,
+      );
+      if (!clips.length || clips.some((c) => !c.video_key || !c.subtitle_key))
+        throw new Problem(
+          "All generated clips need video and subtitle files before review.",
+          409,
+        );
+      await db.batch([
+        statement(
+          db,
+          "UPDATE jobs SET state='READY_FOR_REVIEW',lease_id=NULL,updated_at=? WHERE id=? AND lease_id=?",
+          now(),
+          j.id,
+          request.headers.get("x-job-lease"),
+        ),
+        event(
+          db,
+          j.id,
+          "READY_FOR_REVIEW",
+          `${clips.length} clip(s) saved to private cloud storage. Publishing is disabled.`,
+          j.attempt,
+        ),
+      ]);
+      return json({ state: "READY_FOR_REVIEW" });
+    }
+    throw new Problem("Worker endpoint not found.", 404);
+  }
+  const owner = request.headers.get("oai-authenticated-user-id");
+  if (!owner)
+    throw new Problem("Sign in to access your private dashboard.", 401);
+  if (!["GET", "HEAD"].includes(request.method)) sameOrigin(request);
+  if (path === "/api/bootstrap" && request.method === "GET") {
+    const jobs = (
+      await all(
+        db,
+        "SELECT * FROM jobs WHERE owner=? ORDER BY updated_at DESC LIMIT 200",
+        owner,
+      )
+    ).map(parseJob);
+    const clips = await all(
+      db,
+      "SELECT c.* FROM clips c JOIN jobs j ON j.id=c.job_id AND j.attempt=c.attempt WHERE c.owner=? AND j.state IN ('READY_FOR_REVIEW','APPROVED','PUBLISHING','PUBLISHED') ORDER BY c.created_at DESC LIMIT 500",
+      owner,
+    );
+    const publications = await all(
+      db,
+      "SELECT p.*,c.title FROM publications p JOIN clips c ON c.id=p.clip_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 200",
+      owner,
+    );
+    const account = await one(
+      db,
+      "SELECT channel_id,channel_title,connected_at FROM youtube_accounts WHERE owner=?",
+      owner,
+    );
+    const preferences = await one(
+      db,
+      "SELECT preferences FROM settings WHERE owner=?",
+      owner,
+    );
+    const heartbeat = await one(
+      db,
+      "SELECT last_seen FROM worker_heartbeats WHERE id=?",
+      "cpu",
+    );
+    return json({
+      jobs,
+      clips,
+      publications,
+      account,
+      preferences: preferences ? JSON.parse(preferences.preferences) : DEFAULTS,
+      worker: heartbeat || null,
+      publishing_enabled: false,
+      generation: generationStatus(env),
+      oauth_configured: !!(
+        env.GOOGLE_CLIENT_ID &&
+        env.GOOGLE_CLIENT_SECRET &&
+        env.TOKEN_ENCRYPTION_KEY
+      ),
+      user: {
+        name:
+          request.headers.get("oai-authenticated-user-email") ||
+          "Workspace owner",
       },
-    };
+    });
+  }
+  if (path === "/api/metadata" && request.method === "GET") {
+    const source = youtubeURL(url.searchParams.get("url"));
+    return json({
+      source,
+      ...(await metadata(source.url)),
+      permission_granted: false,
+    });
+  }
+  if (path === "/api/jobs" && request.method === "POST") {
+    const input = await body(request),
+      source = youtubeURL(input.url),
+      opts = options(input.options);
+    if (!["video", "livestream"].includes(input.source_kind))
+      throw new Problem("Choose video or livestream.");
+    const auth = authorization(input.authorization, owner);
+    if (auth) requireGeneration(env);
+    const fingerprint = await hash(JSON.stringify([source.url, opts]));
+    const existing = await one(
+      db,
+      "SELECT id,state FROM jobs WHERE owner=? AND fingerprint=?",
+      owner,
+      fingerprint,
+    );
+    if (existing)
+      return json(
+        {
+          error:
+            "This source and these clip settings already have a job. Open it to review progress or retry a safe failure.",
+          existing_job: existing.id,
+        },
+        409,
+      );
+    const id = uuid(),
+      stamp = now(),
+      meta = await metadata(source.url),
+      state = auth ? "VALIDATING" : "AWAITING_SOURCE_AUTHORIZATION";
+    try {
+      await db.batch([
+        statement(
+          db,
+          "INSERT INTO jobs(id,owner,fingerprint,source_url,source_kind,title,thumbnail,options,authorization,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+          id,
+          owner,
+          fingerprint,
+          source.url,
+          input.source_kind,
+          meta?.title || `YouTube ${input.source_kind} · ${source.id}`,
+          `https://i.ytimg.com/vi/${source.id}/hqdefault.jpg`,
+          JSON.stringify(opts),
+          auth ? JSON.stringify(auth) : null,
+          state,
+          stamp,
+          stamp,
+        ),
+        event(db, id, "CREATED", "Job created."),
+        event(
+          db,
+          id,
+          "VALIDATING",
+          "YouTube URL and clipping settings validated. Metadata is not proof of permission.",
+        ),
+        event(
+          db,
+          id,
+          state,
+          auth
+            ? "Rights evidence and permitted media-access method recorded. Waiting for a CPU worker."
+            : "Add source authorization evidence and an authorized media-file URL before this job can enter the queue.",
+        ),
+      ]);
+    } catch (error) {
+      if (String(error).includes("UNIQUE"))
+        return json(
+          {
+            error:
+              "A duplicate job was created by another request. Refresh to open it.",
+          },
+          409,
+        );
+      throw error;
+    }
+    const result = auth ? await launch(env, db, id, opts.count) : { state };
+    return json({ id, ...result }, 201);
+  }
+  const jobRoute = path.match(
+    /^\/api\/jobs\/([\w-]+)(?:\/(authorization|retry|dispatch|cleanup))?$/,
+  );
+  if (jobRoute) {
+    const j = await ownerJob(db, jobRoute[1], owner);
+    if (request.method === "GET" && !jobRoute[2])
+      return json({
+        job: j,
+        events: await all(
+          db,
+          "SELECT * FROM job_events WHERE job_id=? ORDER BY id",
+          j.id,
+        ),
+      });
+    if (request.method === "POST" && jobRoute[2] === "dispatch") {
+      if (j.state !== "QUEUED")
+        throw new Problem(
+          "Only a queued job can request another worker wake. Active work is not duplicated.",
+          409,
+        );
+      requireGeneration(env);
+      if (!j.storage_reserved) await reserve(db, j.id, j.options.count);
+      await dispatch(env, db, j.id);
+      return json({ state: j.state, dispatch_status: "ACCEPTED" });
+    }
+    if (request.method === "POST" && jobRoute[2] === "cleanup") {
+      if (!["FAILED", "READY_FOR_REVIEW", "APPROVED"].includes(j.state))
+        throw new Problem("Only inactive jobs can be cleaned up.", 409);
+      const locked = await one(
+        db,
+        "UPDATE jobs SET state='CREATED' WHERE id=? AND owner=? AND state=? AND attempt=? RETURNING id",
+        j.id,
+        owner,
+        j.state,
+        j.attempt,
+      );
+      if (!locked)
+        throw new Problem(
+          "This job changed. Refresh before removing its files.",
+          409,
+        );
+      try {
+        await cleanup(env, db, { jobId: j.id, expectedAttempt: j.attempt });
+      } catch (error) {
+        await statement(
+          db,
+          "UPDATE jobs SET state='FAILED',retryable=1,error='Private file cleanup was interrupted. Retry cleanup before processing.' WHERE id=? AND attempt=? AND state='CREATED'",
+          j.id,
+          j.attempt,
+        ).run();
+        throw error;
+      }
+      await db.batch([
+        statement(
+          db,
+          "UPDATE jobs SET state='FAILED',retryable=1,error='Generated files removed by owner. Processing can be retried with current authorization.',updated_at=? WHERE id=? AND attempt=? AND state='CREATED'",
+          now(),
+          j.id,
+          j.attempt,
+        ),
+        event(
+          db,
+          j.id,
+          "FAILED",
+          "Generated files removed by the owner; job history is retained.",
+          j.attempt,
+        ),
+      ]);
+      return json({ deleted: true });
+    }
+    if (request.method === "POST" && jobRoute[2] === "authorization") {
+      requireGeneration(env);
+      if (j.state !== "AWAITING_SOURCE_AUTHORIZATION")
+        throw new Problem(
+          "Only jobs awaiting authorization can be authorized.",
+          409,
+        );
+      const auth = authorization(await body(request), owner);
+      if (!auth)
+        throw new Problem("Explicit source authorization is required.");
+      const updated = await one(
+        db,
+        "UPDATE jobs SET authorization=?,state='CREATED',updated_at=? WHERE id=? AND owner=? AND state='AWAITING_SOURCE_AUTHORIZATION' RETURNING id",
+        JSON.stringify(auth),
+        now(),
+        j.id,
+        owner,
+      );
+      if (!updated)
+        throw new Problem(
+          "Source authorization was already updated. Refresh this job.",
+          409,
+        );
+      await event(
+        db,
+        j.id,
+        "VALIDATING",
+        "Source rights and permitted media access recorded. Reserving cloud capacity.",
+        j.attempt,
+      ).run();
+      return json(
+        await launch(env, db, j.id, j.options.count, j.attempt, true),
+      );
+    }
+    if (request.method === "POST" && jobRoute[2] === "retry") {
+      if (j.state !== "FAILED" || j.retryable !== 1)
+        throw new Problem(
+          "Only safe failed processing can be retried. Publishing is never retried automatically.",
+          409,
+        );
+      if (!currentAuthorization(j.authorization)) {
+        const waiting = await one(
+          db,
+          "UPDATE jobs SET state='AWAITING_SOURCE_AUTHORIZATION',attempt=attempt+1,error=NULL,retryable=0,lease_id=NULL,lease_expires=NULL,updated_at=? WHERE id=? AND owner=? AND state='FAILED' AND attempt=? RETURNING id",
+          now(),
+          j.id,
+          owner,
+          j.attempt,
+        );
+        if (!waiting)
+          throw new Problem(
+            "This job was already updated. Refresh its status.",
+            409,
+          );
+        await event(
+          db,
+          j.id,
+          "AWAITING_SOURCE_AUTHORIZATION",
+          "Source permission expired. Record current authorization before retrying processing.",
+          j.attempt + 1,
+        ).run();
+        return json({ state: "AWAITING_SOURCE_AUTHORIZATION" });
+      }
+      requireGeneration(env);
+      // Claim retry atomically before cleanup. Previous attempt files remain private and are not presented as generated clips.
+      const retried = await one(
+        db,
+        "UPDATE jobs SET state='CREATED',attempt=attempt+1,error=NULL,retryable=0,lease_id=NULL,lease_expires=NULL,updated_at=? WHERE id=? AND owner=? AND state='FAILED' AND attempt=? RETURNING id",
+        now(),
+        j.id,
+        owner,
+        j.attempt,
+      );
+      if (!retried)
+        throw new Problem(
+          "This job was already retried. Refresh its status.",
+          409,
+        );
+      await event(
+        db,
+        j.id,
+        "QUEUED",
+        "Processing retry requested by the workspace owner.",
+        j.attempt + 1,
+      ).run();
+      return json(
+        await launch(env, db, j.id, j.options.count, j.attempt + 1, true),
+      );
+    }
+  }
+  const clipRoute = path.match(
+    /^\/api\/clips\/([\w-]+)\/(review|video|subtitles|publish)$/,
+  );
+  if (clipRoute) {
+    const c = await one(
+      db,
+      "SELECT c.*,j.state AS job_state,j.attempt AS current_attempt FROM clips c JOIN jobs j ON j.id=c.job_id WHERE c.id=? AND c.owner=?",
+      clipRoute[1],
+      owner,
+    );
+    if (
+      !c ||
+      c.attempt !== c.current_attempt ||
+      !["READY_FOR_REVIEW", "APPROVED", "PUBLISHING", "PUBLISHED"].includes(
+        c.job_state,
+      )
+    )
+      throw new Problem("Generated clip not found.", 404);
+    if (clipRoute[2] === "publish")
+      throw new Problem(
+        "Publishing remains disabled. Connection and review do not authorize uploads.",
+        403,
+      );
+    if (clipRoute[2] === "review" && request.method === "POST") {
+      const input = await body(request);
+      if (
+        !["APPROVED", "REJECTED"].includes(input.decision) ||
+        !["READY_FOR_REVIEW", "APPROVED"].includes(c.job_state)
+      )
+        throw new Problem(
+          "This clip cannot be reviewed in its current state.",
+          409,
+        );
+      await statement(
+        db,
+        "UPDATE clips SET review_status=?,reviewed_at=? WHERE id=? AND owner=?",
+        input.decision,
+        now(),
+        c.id,
+        owner,
+      ).run();
+      const counts = await one(
+        db,
+        "SELECT SUM(review_status='PENDING') pending,SUM(review_status='APPROVED') approved FROM clips WHERE job_id=? AND attempt=?",
+        c.job_id,
+        c.attempt,
+      );
+      const next =
+        !counts.pending && counts.approved ? "APPROVED" : "READY_FOR_REVIEW";
+      await db.batch([
+        statement(
+          db,
+          "UPDATE jobs SET state=?,updated_at=? WHERE id=?",
+          next,
+          now(),
+          c.job_id,
+        ),
+        event(
+          db,
+          c.job_id,
+          next,
+          `Clip ${c.position} ${input.decision.toLowerCase()} by the workspace owner. Uploads remain disabled.`,
+          c.attempt,
+        ),
+      ]);
+      return json({ state: next });
+    }
+    if (
+      request.method === "GET" &&
+      ["video", "subtitles"].includes(clipRoute[2])
+    ) {
+      if (env.FREE_TIER_VERIFIED !== "true")
+        throw new Problem(
+          "Private media serving is paused until free storage and operation allowances are verified.",
+          503,
+        );
+      await charge(db, "r2-read", 10000);
+      const key = clipRoute[2] === "video" ? c.video_key : c.subtitle_key;
+      const object =
+        key && env.BUCKET
+          ? await env.BUCKET.get(key, { range: request.headers })
+          : null;
+      if (!object)
+        throw new Problem(
+          "Clip file is unavailable in private cloud storage.",
+          404,
+        );
+      const headers = new Headers({
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      });
+      object.writeHttpMetadata(headers);
+      headers.set("Accept-Ranges", "bytes");
+      if (clipRoute[2] === "subtitles")
+        headers.set(
+          "Content-Disposition",
+          `attachment; filename="${c.id}.srt"`,
+        );
+      if (object.range) {
+        headers.set(
+          "Content-Range",
+          `bytes ${object.range.offset}-${object.range.offset + object.range.length - 1}/${object.size}`,
+        );
+        headers.set("Content-Length", String(object.range.length));
+      } else headers.set("Content-Length", String(object.size));
+      return new Response(object.body, {
+        status: object.range ? 206 : 200,
+        headers,
+      });
+    }
+  }
+  if (path === "/api/settings" && request.method === "POST") {
+    const prefs = options(await body(request));
+    await statement(
+      db,
+      "INSERT INTO settings(owner,preferences) VALUES(?,?) ON CONFLICT(owner) DO UPDATE SET preferences=excluded.preferences",
+      owner,
+      JSON.stringify(prefs),
+    ).run();
+    return json({ preferences: prefs, publishing_enabled: false });
+  }
+  if (path === "/api/youtube/disconnect" && request.method === "POST") {
+    await statement(
+      db,
+      "DELETE FROM youtube_accounts WHERE owner=?",
+      owner,
+    ).run();
+    return json({ disconnected: true, publishing_enabled: false });
+  }
+  if (path === "/api/youtube/connect" && request.method === "GET") {
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
+      throw new Problem(
+        "Set up a Google OAuth Web application and its cloud secrets first. No account has been connected.",
+        503,
+      );
+    await secretKey(env);
+    const state = uuid() + uuid();
+    await statement(
+      db,
+      "INSERT INTO oauth_states(hash,owner,expires_at) VALUES(?,?,?)",
+      await hash(state),
+      owner,
+      new Date(Date.now() + 10 * 60000).toISOString(),
+    ).run();
+    const target = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    target.search = new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID,
+      redirect_uri: url.origin + "/api/youtube/callback",
+      response_type: "code",
+      scope:
+        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+      access_type: "offline",
+      prompt: "consent",
+      state,
+    }).toString();
+    return Response.redirect(target.href, 302);
+  }
+  if (path === "/api/youtube/callback" && request.method === "GET") {
+    const state = url.searchParams.get("state");
+    if (!state) throw new Problem("Missing YouTube OAuth state.", 403);
+    const consumed = await one(
+      db,
+      "DELETE FROM oauth_states WHERE hash=? AND owner=? AND expires_at>? RETURNING owner",
+      await hash(state),
+      owner,
+      now(),
+    );
+    if (!consumed)
+      throw new Problem(
+        "Connection request expired or was already used. Start again from YouTube Connection.",
+        403,
+      );
+    if (url.searchParams.get("error"))
+      return Response.redirect(
+        url.origin + "/youtube?connection=cancelled",
+        302,
+      );
+    const code = url.searchParams.get("code");
+    if (!code) throw new Problem("Google did not return a connection code.");
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: url.origin + "/api/youtube/callback",
+        grant_type: "authorization_code",
+      }),
+    });
+    if (!response.ok)
+      throw new Problem(
+        "Google could not complete authorization. Start the connection again.",
+        502,
+      );
+    const tokens = await response.json();
+    if (!tokens.refresh_token)
+      throw new Problem(
+        "Google did not supply offline access. Reconnect with consent to allow cloud use.",
+        409,
+      );
+    const channels = await fetch(
+      "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+      { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+    );
+    if (!channels.ok)
+      throw new Problem(
+        "Cannot read the authorized channel. Enable YouTube Data API and retry.",
+        502,
+      );
+    const channel = (await channels.json()).items?.[0];
+    if (!channel)
+      throw new Problem(
+        "This Google account has no accessible YouTube channel.",
+      );
+    const encrypted = await encryptTokens(env, {
+      ...tokens,
+      obtained_at: now(),
+    });
+    await statement(
+      db,
+      "INSERT INTO youtube_accounts(owner,channel_id,channel_title,encrypted_tokens,connected_at) VALUES(?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET channel_id=excluded.channel_id,channel_title=excluded.channel_title,encrypted_tokens=excluded.encrypted_tokens,connected_at=excluded.connected_at",
+      owner,
+      channel.id,
+      channel.snippet.title,
+      encrypted,
+      now(),
+    ).run();
+    return Response.redirect(url.origin + "/youtube?connection=success", 302);
+  }
+  throw new Problem("Endpoint not found.", 404);
+}
+export default {
+  async fetch(request, env) {
+    try {
+      const path = new URL(request.url).pathname;
+      if (path.startsWith("/api/")) return await api(request, env);
+      if (request.method !== "GET")
+        return json({ error: "Method not allowed." }, 405);
+      const headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "same-origin",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy":
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://i.ytimg.com; media-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
+      };
+      if (path === "/app.css")
+        return new Response(__CSS__, {
+          headers: { ...headers, "Content-Type": "text/css" },
+        });
+      if (path === "/app.js")
+        return new Response(__JS__, {
+          headers: { ...headers, "Content-Type": "text/javascript" },
+        });
+      return new Response(__HTML__, {
+        headers: { ...headers, "Content-Type": "text/html;charset=utf-8" },
+      });
+    } catch (error) {
+      if (!(error instanceof Problem))
+        console.error("Dashboard request failed:", String(error).slice(0, 300));
+      return json(
+        {
+          error:
+            error instanceof Problem
+              ? error.message
+              : "The cloud service could not complete this operation. Refresh and try again.",
+        },
+        error.status || 500,
+      );
+    }
   },
 };
-const env = {
-  DB: db,
-  BUCKET: bucket,
-  WORKER_TOKEN: "synthetic-test-worker",
-  FREE_TIER_VERIFIED: "true",
-  GITHUB_DISPATCH_TOKEN: "isolated-test-token",
-  WORKER_CONNECTION_VERIFIED_AT: new Date().toISOString(),
-};
-// Only the GitHub dispatch boundary is stubbed: the actual cloud worker is this CI job.
-// No production credentials, Site, YouTube content, transcript, renderer or media are mocked.
-globalThis.fetch = async (url) => {
-  if (String(url).endsWith("/repos/Saisathwik045/purffle-shorts"))
-    return Response.json({
-      private: false,
-      full_name: "Saisathwik045/purffle-shorts",
-      default_branch: "main",
-    });
-  if (String(url).endsWith("/dispatches"))
-    return new Response(null, { status: 204 });
-  throw new Error(
-    "This isolated fixture does not fetch external source metadata",
-  );
-};
-const server = http.createServer(async (req, res) => {
-  try {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const headers = { ...req.headers };
-    // Test-only identity transport, accepted only by this loopback harness, absent from deployed source.
-    if (headers["x-test-owner"])
-      headers["oai-authenticated-user-id"] = headers["x-test-owner"];
-    const request = new Request(
-      `http://127.0.0.1:${server.address().port}${req.url}`,
-      {
-        method: req.method,
-        headers,
-        ...(!["GET", "HEAD"].includes(req.method)
-          ? { body: Buffer.concat(chunks) }
-          : {}),
-      },
-    );
-    const response = await worker.fetch(request, env);
-    res.writeHead(response.status, Object.fromEntries(response.headers));
-    res.end(Buffer.from(await response.arrayBuffer()));
-  } catch (error) {
-    res.writeHead(500);
-    res.end(String(error));
-  }
-});
-server.listen(0, "127.0.0.1", async () => {
-  await writeFile(
-    resolve(root, "origin"),
-    `http://127.0.0.1:${server.address().port}`,
-  );
-  console.log("Isolated cloud API and private filesystem object store ready");
-});

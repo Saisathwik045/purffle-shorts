@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   process:
-    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true'
+    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true' && (inputs.verify_connection == true || vars.PURFFLE_ACTIONS_APP_USE_AUTHORIZED == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:

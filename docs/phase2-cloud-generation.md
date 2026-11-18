@@ -18,6 +18,16 @@ manage Actions secrets, billing, variables or runtime dispatch credentials. The
 cloud browser also fails to initialize. The following account actions cannot be
 completed through the available access:
 
+0. **Provider authorization is a prerequisite, not a billing switch.** GitHub's
+   [Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#actions)
+   restrict application-backend/serverless use. The free public-runner allowance
+   does not authorize this production workload. Obtain documented GitHub permission
+   for this use before setting Site `ACTIONS_APP_USE_AUTHORIZED=true` and repository
+   variable `PURFFLE_ACTIONS_APP_USE_AUTHORIZED=true`. Do not set them merely to
+   dismiss the warning. Otherwise keep production off and provision a separately
+   authorized free worker; none is connected or claimed verified in this task.
+   CI generation tests and the non-processing private-connection check remain
+   available independently.
 1. Review and merge PR #2 so `dashboard-worker.yml` exists on the default branch.
 2. Configure repository variables `PURFFLE_DASHBOARD_URL` with the exact origin
    above and `PURFFLE_DASHBOARD_WORKER_ENABLED=true`.
@@ -129,4 +139,42 @@ the cloud pipeline and API integration, **not** a production Site/R2 roundtrip.
 A bounded original synthetic MP4 may be exported in the free workflow log, avoiding
 Actions artifact storage and publishing no user media. No live production jobs,
 rights evidence or credentials are copied to that log. Exact test results and
-recovered output are recorded after the current run completes.
+recovered output are recorded below.
+
+## Verified result from the real cloud run
+
+[Cloud generation CI passed](https://github.com/Saisathwik045/purffle-shorts/actions/runs/44245901913/job/134604660379).
+The original synthetic output was recovered from the bounded workflow log and its
+SHA-256 verified independently in the managed cloud workspace:
+
+- H.264/AAC MP4, 720 × 1280 (9:16), 10.57 seconds, 371,643 bytes.
+- 13 subtitle cues, all within clip bounds; 4,750 visible bright caption pixels
+  on the dark synthetic picture. A decoded frame was also visually inspected.
+- Anonymous preview returned 401; another owner returned 404; the owner received
+  the actual MP4 bytes. Range 0–1023 returned 206 and matched those bytes.
+- Full video decoding passed; actual stage history reached READY_FOR_REVIEW;
+  no publication records appeared and publishing returned 403.
+- SHA-256: `e6556c21e8eb98721437392dcaf9f2abb3e81480e0eb6d9bee8d22acd95f4c37`.
+- Model revision: `ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66`.
+
+Machine-readable evidence: [phase2-verification.json](phase2-verification.json).
+The returned media artifact is `/workspace/onboarding-artifacts/phase2/short.mp4`
+in this cloud chat workspace; it is not user media or a YouTube upload.
+
+Cloud test development encountered and fixed three concrete failures: an unneeded
+system-package step stalled, a 10-second model-download timeout interrupted the
+HTTP fallback, and a custom snapshot file filter omitted vocabulary assets. The
+pipeline now uses bundled FFmpeg and original fixture speech, tolerates normal
+public-weight transfer times, and reuses faster-whisper's complete downloader
+with a pinned revision. A log-export backpressure failure after a passing pipeline
+was also corrected; the final CI job, including export, is green.
+
+Current available checks passed: 14 Node API/state/security tests, 42 focused Python
+worker/cloud/clipping tests, production build, JavaScript syntax, Ruff, Python
+compilation, and workflow YAML parsing. The successful cloud integration uses the
+same real inference, clipping and rendering modules; SQLite/filesystem substitute
+only for production D1/R2, and the dispatch response is stubbed in the isolated
+runner harness. Live Site-to-GitHub dispatch and Site-to-R2 preview are not claimed
+as tested: account credentials, provider usage verification, and the authoring
+network policy remain blockers. No paid API, storage artifact, or Mac processing
+was used.

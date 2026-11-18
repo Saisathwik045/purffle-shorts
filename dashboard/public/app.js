@@ -345,7 +345,7 @@ function youtube() {
   return `${head("Your channel, securely connected.", "Connect through Google in the browser. Credentials stay encrypted in the cloud.")}<div class="two-col"><div class="stack"><section class="account-hero"><div class="youtube-mark">${icon("youtube")}</div><div><h2>${a ? esc(a.channel_title) : "Connect your YouTube channel"}</h2><p>${a ? "Channel ID: " + esc(a.channel_id) : "Choose the channel you want to associate with this workspace."}</p><span class="badge ${a ? "green" : "gray"}">${a ? "Connected" : "Not connected"}</span></div></section><section class="card"><div class="card-head"><h2>Account connection</h2><span class="badge gray">Publishing off</span></div><div class="card-body">${a ? `<p class="muted" style="font-size:12px">Connected ${date(a.connected_at)}. Your OAuth refresh token is encrypted and is never returned to the browser.</p><button class="btn danger section-space" data-action="disconnect">Remove saved connection</button>` : `<p class="muted" style="font-size:12px">Use Google’s authorization screen to select an account and channel. Connecting records account access; it does not enable uploads.</p>${state.oauth_configured ? '<a class="btn primary section-space" href="/api/youtube/connect" target="_top">Connect with Google →</a>' : '<div class="note amber section-space"><strong>Google OAuth setup required</strong>No Google client is configured for this cloud dashboard. Configure the account-level requirements below before connecting.</div><button class="btn section-space" disabled>Connect with Google · setup required</button>'}`}</div></section>${!state.oauth_configured ? `<section class="card"><div class="card-head"><h2>One-time cloud account setup</h2></div><div class="card-body prose"><ol><li>Enable YouTube Data API v3 in your Google Cloud project and create a <b>Web application</b> OAuth client.</li><li>Register this exact redirect URL:<br><code>${esc(location.origin)}/api/youtube/callback</code></li><li>Configure <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code> and a base64 32-byte <code>TOKEN_ENCRYPTION_KEY</code> as private hosted runtime values.</li><li>Configure the consent screen and your test user. Testing-mode refresh tokens can expire after seven days.</li></ol><p>Never paste credentials into this page, a job description or the source repository.</p></div></section>` : ""}</div><div class="stack"><div class="note"><strong>Connection is not publication.</strong>Uploads require a separate, explicit authorization. This dashboard cannot transition a job into publishing through this interface.</div><div class="card"><div class="card-head"><h2>Cloud security</h2></div><div class="card-body key-values"><div><span>Token storage</span><b>AES-GCM encrypted</b></div><div><span>Account records</span><b>Owner scoped</b></div><div><span>Sign-in</span><b>Private hosted access</b></div><div><span>Mac setup</span><b>None required</b></div></div></div></div></div>`;
 }
 function settings() {
-  return `${head("A workspace that works your way.", "Save your clipping defaults and check your cloud configuration.")}<div class="two-col"><div class="stack"><form class="card" id="settings-form"><div class="card-head"><h2>Clipping defaults</h2><span class="badge purple">Saved in the cloud</span></div><div class="card-body">${prefFields(state.preferences)}<div id="settings-error" class="error" role="alert"></div><div class="form-footer"><small>These defaults apply to new jobs. Existing jobs keep their recorded settings.</small><button class="btn primary">Save preferences</button></div></div></form><section class="card"><div class="card-head"><h2>Cloud worker</h2>${badge(state.worker ? "CREATED" : "QUEUED")}</div><div class="card-body"><div class="key-values"><div><span>Last reported heartbeat</span><b>${state.worker ? date(state.worker.last_seen) : "No worker has reported"}</b></div><div><span>Inference</span><b>Whisper base · CPU / int8</b></div><div><span>Media limit</span><b>500 MiB · 30 minutes</b></div><div><span>Per-clip file limit</span><b>25 MiB</b></div><div><span>Publishing</span><b>Disabled</b></div></div><div class="note section-space"><strong>Processing needs a connected remote worker.</strong>The repository includes a GitHub Actions worker. It needs the private Site service credential and a separate worker secret in GitHub Actions, plus an enabled schedule on the default branch. These credentials are never entered into the dashboard.</div><a class="btn small section-space" href="https://github.com/Saisathwik045/purffle-shorts/blob/codex/cloud-free-clipping/docs/cloud-dashboard.md" target="_blank" rel="noopener">Cloud setup guide ↗</a></div></section></div><div class="stack"><section class="card"><div class="card-head"><h2>Cost & execution</h2></div><div class="card-body key-values"><div><span>Inference APIs</span><b>None</b></div><div><span>Video processing</span><b>Remote Linux CPU</b></div><div><span>Dashboard data</span><b>Private D1 database</b></div><div><span>Generated media</span><b>Private object storage</b></div></div></section><div class="note amber"><strong>Free allowances have limits.</strong>Public standard GitHub runners avoid paid inference. Storage, hosting and account limits must be checked in the provider accounts. Do not enable paid overages.</div><div class="note"><strong>Browser-only on your Mac.</strong>Viewing the dashboard and playing a clip require no local server, Python environment, Docker or ML model.</div></div></div>`;
+  return `${head("A workspace that works your way.", "Save your clipping defaults and check your cloud configuration.")}<div class="two-col"><div class="stack"><form class="card" id="settings-form"><div class="card-head"><h2>Clipping defaults</h2><span class="badge purple">Saved in the cloud</span></div><div class="card-body">${prefFields(state.preferences)}<div id="settings-error" class="error" role="alert"></div><div class="form-footer"><small>These defaults apply to new jobs. Existing jobs keep their recorded settings.</small><button class="btn primary">Save preferences</button></div></div></form><section class="card"><div class="card-head"><h2>Cloud worker</h2>${badge(state.worker ? "CREATED" : "QUEUED")}</div><div class="card-body"><div class="key-values"><div><span>Last reported heartbeat</span><b>${state.worker ? date(state.worker.last_seen) : "No worker has reported"}</b></div><div><span>Inference</span><b>Whisper base · CPU / int8</b></div><div><span>Media limit</span><b>500 MiB · 30 minutes</b></div><div><span>Per-clip file limit</span><b>25 MiB</b></div><div><span>Publishing</span><b>Disabled</b></div></div><div class="note section-space"><strong>Processing needs a connected remote worker.</strong>The repository includes a GitHub Actions worker. It needs the private Site service credential and a separate worker secret in GitHub Actions, plus an enabled schedule on the default branch. These credentials are never entered into the dashboard.</div><a class="btn small section-space" href="https://github.com/Saisathwik045/purffle-shorts/blob/codex/cloud-free-clipping/docs/phase2-cloud-generation.md" target="_blank" rel="noopener">Cloud setup guide ↗</a></div></section></div><div class="stack"><section class="card"><div class="card-head"><h2>Cost & execution</h2></div><div class="card-body key-values"><div><span>Inference APIs</span><b>None</b></div><div><span>Video processing</span><b>Remote Linux CPU</b></div><div><span>Dashboard data</span><b>Private D1 database</b></div><div><span>Generated media</span><b>Private object storage</b></div></div></section><div class="note amber"><strong>Free allowances have limits.</strong>Public standard GitHub runners avoid paid inference. Storage, hosting and account limits must be checked in the provider accounts. Do not enable paid overages.</div><div class="note"><strong>Browser-only on your Mac.</strong>Viewing the dashboard and playing a clip require no local server, Python environment, Docker or ML model.</div></div></div>`;
 }
 function render() {
   if (!state) return;
@@ -373,6 +373,15 @@ function render() {
       `<div class="note amber" style="margin-bottom:20px"><strong>Cloud generation is paused — setup required</strong>${state.generation.blockers.map(esc).join(" ")} No video processing will start until these checks pass.</div>` +
       content;
   document.querySelector("#app").innerHTML = shell(content);
+}
+function generationNotice(result) {
+  if (result.state === "AWAITING_SOURCE_AUTHORIZATION")
+    return "Job saved. Add current source authorization before processing.";
+  if (result.state === "FAILED")
+    return "Cloud generation is blocked. Open this job to review its recorded error.";
+  if (result.dispatch_status === "UNCONFIRMED")
+    return "Worker wake was not confirmed. Follow the existing job; do not create a duplicate.";
+  return "Cloud generation requested. Follow the recorded job stages; publishing remains disabled.";
 }
 function formOptions(form) {
   const f = new FormData(form);
@@ -492,11 +501,7 @@ document.addEventListener("click", async (e) => {
     if (retry) {
       retry.disabled = true;
       const result = await post(`/api/jobs/${retry.dataset.retry}/retry`);
-      toast(
-        result.state === "QUEUED"
-          ? "Processing retry queued. Publishing remains disabled."
-          : "Source permission expired. Add current authorization to retry processing.",
-      );
+      toast(generationNotice(result));
       await load();
     }
     if (review) {
@@ -537,17 +542,16 @@ document.addEventListener("submit", async (e) => {
       });
       await load();
       go("/jobs/" + result.id);
-      toast(
-        result.state === "QUEUED"
-          ? "Authorized job queued for cloud processing."
-          : "Job saved. Add source authorization to enter the queue.",
-      );
+      toast(generationNotice(result));
     }
     if (form.id === "auth-form") {
-      await post(`/api/jobs/${form.dataset.job}/authorization`, formAuth(form));
+      const result = await post(
+        `/api/jobs/${form.dataset.job}/authorization`,
+        formAuth(form),
+      );
       document.activeElement?.blur();
       await load();
-      toast("Source authorization saved. Job queued for the cloud worker.");
+      toast(generationNotice(result));
     }
     if (form.id === "settings-form") {
       const result = await post("/api/settings", formOptions(form));
