@@ -113,17 +113,25 @@ Native Sites read-only inspection in this phase confirmed:
 - No provider, paid resource, subscription, API credit purchase, billing account,
   public bucket, publishing action or real-source processing was created here.
 
-This phase's draft changes are not yet deployed or merged. Tests have been added
-but must run in Codex Cloud. The current chat is attached to the user's Mac; no
-application tests, dependency installs, rendering or transcription have run there.
-An existing runnable purffle-shorts Cloud environment was discovered, but its tool
-starts a separate task and requires the user's explicit permission to create one.
-That permission is pending. Do not replace Cloud testing with Mac execution.
+This phase's draft changes are not yet deployed or merged. Repository software CI
+at code commit 944e024 passed 33 Node tests, JavaScript syntax and the production
+dashboard build. Its isolated synthetic integration also passed real Whisper/FFmpeg
+generation: 10.57 seconds, 720×1280, 13 subtitle cues, private range preview and
+full video decoding. This used SQLite/filesystem test storage, not production D1/R2.
+Evidence: https://github.com/Saisathwik045/purffle-shorts/actions/runs/44357274725
+
+The user separately requires Codex Cloud verification. The current chat is attached
+to the user's Mac; no application tests, dependency installs, rendering or transcription
+have run there. An existing runnable purffle-shorts Codex Cloud environment was
+discovered. The user explicitly authorized a new Cloud task; the creation request
+has not returned a task ID yet. Codex Cloud verification is still pending, not passed.
+Do not substitute the CI result for that requirement or use the Mac.
 
 ## Remaining account actions
 
-1. Authorize creation of the separate Codex Cloud development/test task in the existing
-   purffle-shorts environment. No new paid environment is requested.
+1. Complete the already-authorized Codex Cloud task setup and run Cloud verification.
+   The creation tool request is pending; do not create duplicate Cloud tasks or use
+   the Mac as a fallback. No additional purchase or authorization is requested.
 2. Establish a provider account with actual no-card/no-additional-charge eligibility
    and documented permission for this exact workload. For Lightning/ZeroGPU, verify
    the account-specific restart/queue/private-API behavior first. Neither is silently selected.
