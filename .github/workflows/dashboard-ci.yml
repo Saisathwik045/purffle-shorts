@@ -1,0 +1,33 @@
+name: Cloud dashboard checks
+on:
+  pull_request:
+    paths:
+      - dashboard/**
+      - purffle_shorts/dashboard_worker.py
+      - tests/test_dashboard_worker.py
+      - .github/workflows/dashboard-*.yml
+  push:
+    branches: [main]
+    paths:
+      - dashboard/**
+      - purffle_shorts/dashboard_worker.py
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm --prefix dashboard ci --no-audit --no-fund
+      - run: npm --prefix dashboard test
+      - run: node --check dashboard/public/app.js
+      - run: npm --prefix dashboard run build

@@ -1,0 +1,19 @@
+{
+  "name": "purffle-cloud-dashboard",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-11-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "purffle-dashboard",
+      "database_id": "local",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "purffle-clips",
+    },
+  ],
+}

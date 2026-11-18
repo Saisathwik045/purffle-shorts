@@ -1,0 +1,44 @@
+name: Dashboard CPU worker
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: purffle-dashboard-worker
+  cancel-in-progress: false
+jobs:
+  process:
+    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      PURFFLE_DASHBOARD_URL: ${{ vars.PURFFLE_DASHBOARD_URL }}
+      PURFFLE_DASHBOARD_WORKER_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_WORKER_TOKEN }}
+      PURFFLE_DASHBOARD_SITE_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Check private cloud access configuration
+        run: |
+          test -n "$PURFFLE_DASHBOARD_URL" || { echo 'Configure the dashboard URL repository variable'; exit 1; }
+          test -n "$PURFFLE_DASHBOARD_WORKER_TOKEN" || { echo 'Configure the worker secret'; exit 1; }
+          test -n "$PURFFLE_DASHBOARD_SITE_TOKEN" || { echo 'Configure private Site service access'; exit 1; }
+      - name: CPU media tools
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg fonts-dejavu-core
+          fi
+      - name: Reproduce CPU environment
+        run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - name: Process one authorized queued job (uploads disabled)
+        run: python -m purffle_shorts.dashboard_worker
