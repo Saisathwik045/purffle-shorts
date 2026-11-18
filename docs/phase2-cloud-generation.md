@@ -1,0 +1,132 @@
+# Phase 2: real cloud generation
+
+Private dashboard: https://purffle-shorts-cloud.turfylamb4.chatgpt.site
+
+The existing interface, owner authentication, records, preferences, OAuth and
+clipping modules are retained. `Generate clips` now calls the hosted API which
+reserves storage, checks the public GitHub repository, and sends a real Actions
+workflow dispatch to the fixed `dashboard-worker.yml` workflow on the repository's
+default branch. The CPU worker claims only the requested authorized job. A schedule
+provides recovery for an unconfirmed dispatch; additional wakes cannot duplicate
+an active claim. No local server or processing on a Mac is required.
+
+## Activation is blocked until the account prerequisites are met
+
+This is a real integration, but production execution is deliberately fail-closed.
+Neither this task's GitHub connector nor the invalid terminal GitHub token can
+manage Actions secrets, billing, variables or runtime dispatch credentials. The
+cloud browser also fails to initialize. The following account actions cannot be
+completed through the available access:
+
+1. Review and merge PR #2 so `dashboard-worker.yml` exists on the default branch.
+2. Configure repository variables `PURFFLE_DASHBOARD_URL` with the exact origin
+   above and `PURFFLE_DASHBOARD_WORKER_ENABLED=true`.
+3. Configure repository secrets `PURFFLE_DASHBOARD_WORKER_TOKEN` (matching the
+   Site's private `WORKER_TOKEN`) and `PURFFLE_DASHBOARD_SITE_TOKEN` (the private
+   Site service-access bearer for this Site). Use secure provider settings, never
+   repository files, chat messages, form fields, logs or artifacts. Native Sites
+   tools can retrieve supported service access. If the existing app worker secret
+   cannot be recovered, reprovision it on both sides through secure settings.
+4. Configure a repository-scoped token or GitHub App installation token with
+   **Actions: write** and repository metadata access as the Site runtime secret
+   `GITHUB_DISPATCH_TOKEN`. No code-writing or YouTube permission is needed.
+5. Manually run the worker workflow with `verify_connection=true`. This checks both private access layers and the database/storage binding without claiming a job, downloading a model or touching media. Set
+   `WORKER_CONNECTION_VERIFIED_AT` in the Site runtime to the verification's UTC
+   ISO timestamp; this check expires after 30 days.
+6. Check actual provider plan and account-wide usage, including other Sites/apps,
+   free storage baseline, R2 Standard storage and spending controls. Only if a
+   dedicated free allowance covers this app and overage cannot cause charges,
+   set `FREE_TIER_VERIFIED=true` in Site runtime and deploy that environment revision.
+   Leave it unset if the provider account cannot guarantee a no-charge allowance.
+
+Use the exact `checked_at` UTC timestamp reported by that real connection test; do not invent one. Connection verification is separate from the provider billing attestation. The UI displays setup blockers while configuration is
+missing. Unauthorized jobs can still be saved outside the processing queue.
+
+No Google OAuth credentials are required to **generate** clips. YouTube uploads
+remain disabled in the UI, API and worker, even after clip approval.
+
+## Actual pipeline
+
+The additive Python worker uses the existing clipping code with faster-whisper
+CPU/int8 and free sentence-based highlight selection. It verifies the permitted
+media-file URL, source checksum, all-component rights and source duration before
+transcription. It renders H.264/AAC MP4 at 720x1280 by default, burns word-timed
+captions, saves SRT and metadata, uploads through the private API into R2, and
+marks `READY_FOR_REVIEW` only after all files have been acknowledged.
+
+A YouTube URL is a reference, never a download license. No restriction bypass,
+YouTube downloader, live capture, paid model API, or paid fallback is introduced.
+The authorized media must be supplied independently by the rights holder.
+
+The first real GitHub inference test completed successfully on Ubuntu 24.04:
+[cloud-inference job](https://github.com/Saisathwik045/purffle-shorts/actions/runs/44240514753/job/134586993601).
+Its log records public Whisper download and `PASS: real Whisper base CPU int8
+inference, burned captions, SRT and vertical H.264/AAC`. This resolves the earlier
+HTTP 403 **on a GitHub runner**. The managed authoring workspace still has an
+allowlist that excludes Hugging Face and the deployed Site origin; we do not
+bypass that restriction. The explicit public snapshot preparation in the new
+integration test uses no Hugging Face token or paid API.
+
+## Charges, limits and cleanup
+
+Official limits checked 18 November 2026:
+
+| Provider | Published free allowance | Application guard |
+| --- | --- | --- |
+| Standard public GitHub Actions runner | Runner compute is free | Fixed Ubuntu standard runner; private repositories rejected; no larger/GPU runner |
+| R2 Standard | 10 GB-month; 1 million Class A and 10 million Class B requests/month; free egress | 512 MiB total reservations; 25 MiB/video, 1 MiB/SRT; 2,000 writes and 10,000 reads/month |
+| D1 on Workers Free | 5 million rows read/day; 100,000 written/day; 5 GB storage | Indexed job lookups, bounded results, persisted budget counters; provider free-plan hard limits still required |
+| Workers Free | 100,000 requests/day; 10 ms CPU/invocation | HTTP orchestration/storage only; no video inference or rendering in a Worker |
+
+Sources: [GitHub billing](https://docs.github.com/en/actions/concepts/billing-and-usage),
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/),
+[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+
+These are account-wide provider limits, not proof that this account has remaining
+quota. Paid plans, shared consumption, pre-existing objects or overage settings
+cannot be inferred from source code. Production is blocked until verified. R2
+Infrequent Access is not eligible and must not be selected. No new paid plan,
+Cloudflare account, paid API or storage overage was enabled by this task.
+
+There are at most 200 dispatches/month. Storage is reserved atomically before
+queue admission, including all jobs' reservations. Upload and preview operations
+stop at conservative monthly caps. Seven-day retention deletes inactive private
+media in bounded batches when a worker polls, releases reservations, and retains
+job history. The owner can delete generated files without deleting history.
+Failed partial outputs are removed before retry and on failure; predetermined keys
+also cover an upload whose acknowledgement was lost. If a worker never polls,
+automatic retention is delayed, so existing reservations remain held rather than
+allowing more uploads. Provider account usage must still be monitored.
+
+Retries are bounded. Claims are never retried blindly; file writes replace the same
+key; clip metadata, stage updates and completion acknowledgements are idempotent.
+A failed/unconfirmed GitHub dispatch remains visibly queued and can request another
+wake for the same job. Publication is never retried or attempted.
+
+## Cloud integration verification
+
+`cloud/dashboard_e2e.py` runs in the PR's standard public Linux GitHub runner using the existing bundled CPU FFmpeg, without system-package installation.
+It creates an original synthetic picture with the project’s original offline speech fixture, submits an authorized job
+through the same dashboard API, runs real Whisper, real highlight selection and
+FFmpeg, uploads the output to an isolated filesystem object store, and fetches the
+private preview through the same authenticated media route. It verifies:
+
+- No access for anonymous or different-owner callers.
+- Duplicate prevention and real persisted stage events.
+- A decodable 720x1280 MP4 with audio, valid bounded SRT cues and recognizable speech.
+- Visible caption pixels on the otherwise dark synthetic picture.
+- Byte-range preview matches the generated file and video elements reference the
+  private route; publishing returns 403 and publication history remains empty.
+
+Only the GitHub dispatch boundary is stubbed in this **isolated integration test**:
+the actual worker is the already-running GitHub CI job. SQLite/filesystem adapters
+stand in for production D1/R2. There is no mocked transcript, clip, progress or
+video renderer. The fixture and test-only loopback identity transport are not
+bundled into or enabled on the deployed Site. A successful test is evidence for
+the cloud pipeline and API integration, **not** a production Site/R2 roundtrip.
+
+A bounded original synthetic MP4 may be exported in the free workflow log, avoiding
+Actions artifact storage and publishing no user media. No live production jobs,
+rights evidence or credentials are copied to that log. Exact test results and
+recovered output are recorded after the current run completes.

@@ -486,3 +486,19 @@ test("private clip cleanup removes partial objects and preserves failure history
     ),
   );
 });
+test("private connection can be verified before production generation is enabled", async () => {
+  const env = context();
+  env.FREE_TIER_VERIFIED = "false";
+  delete env.GITHUB_DISPATCH_TOKEN;
+  delete env.WORKER_CONNECTION_VERIFIED_AT;
+  const response = await (
+    await call(env, "/api/worker/health", "POST", {}, null, workerHeaders)
+  ).json();
+  assert(response.connected && response.storage_bound);
+  assert(Number.isFinite(Date.parse(response.checked_at)));
+  assert.equal(response.publishing_enabled, false);
+  assert.equal(
+    (await (await call(env, "/api/bootstrap")).json()).generation.enabled,
+    false,
+  );
+});

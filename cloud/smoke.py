@@ -19,7 +19,7 @@ with TemporaryDirectory(prefix="purffle-smoke-") as folder:
     root = Path(folder)
     source = root / "source.mp4"
     ffmpeg.run(["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
-                "-f", "lavfi", "-i", f"flite=text='{TEXT}':voice=slt", "-c:v", "libx264",
+                "-i", str(Path(__file__).parent / "fixtures" / "synthetic-speech.opus"), "-c:v", "libx264",
                 "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(source)])
     settings = cloud_settings(root / "output").with_overrides(resolution=(360, 640))
     results = make_clips(Studio(settings), str(source), count=1, crop="blur", upload=False, min_seconds=5)

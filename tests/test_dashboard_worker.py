@@ -60,3 +60,35 @@ def test_bridge_reuses_clipper_and_reports_only_actual_stages(tmp_path, monkeypa
         "TRANSCRIBING", "SELECTING_HIGHLIGHTS", "RENDERING", "GENERATING_METADATA"]
     assert all("progress" not in data and "percentage" not in data for _, data in updates)
     assert updates[-1] == ("complete", {}) and len(files) == 2
+
+
+def test_claim_connection_failure_is_never_retried(monkeypatch):
+    import requests
+    calls = []
+    client = W.DashboardClient.__new__(W.DashboardClient)
+    client.origin = "https://dashboard.example.org"
+    def timeout(*args, **kwargs):
+        calls.append(args)
+        raise requests.Timeout()
+    client.session = SimpleNamespace(request=timeout)
+    with pytest.raises(RuntimeError, match="claim"):
+        client.request("POST", "/api/worker/claim", json={})
+    assert len(calls) == 1
+
+
+def test_transient_upload_retry_rewinds_same_file(monkeypatch):
+    import io
+
+    import requests
+    bodies = []
+    client = W.DashboardClient.__new__(W.DashboardClient)
+    client.origin = "https://dashboard.example.org"
+    def request(*args, **kwargs):
+        bodies.append(kwargs["data"].read())
+        if len(bodies) == 1:
+            raise requests.Timeout()
+        return SimpleNamespace(status_code=200, json=lambda: {"saved": True})
+    client.session = SimpleNamespace(request=request)
+    monkeypatch.setattr(W.time, "sleep", lambda _: None)
+    assert client.request("PUT", "/api/worker/jobs/id/clips/id/video", data=io.BytesIO(b"actual-bytes")) == {"saved": True}
+    assert bodies == [b"actual-bytes", b"actual-bytes"]

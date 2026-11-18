@@ -8,6 +8,11 @@ on:
         description: Specific authorized queued job to claim
         required: false
         type: string
+      verify_connection:
+        description: Check private dashboard access without claiming work
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -48,4 +53,11 @@ jobs:
       - name: Reproduce CPU environment
         run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
       - name: Process one authorized queued job (uploads disabled)
-        run: python -m purffle_shorts.dashboard_worker
+        env:
+          VERIFY_CONNECTION: ${{ inputs.verify_connection }}
+        run: |
+          if [ "$VERIFY_CONNECTION" = 'true' ]; then
+            python -m purffle_shorts.dashboard_worker --check-connection
+          else
+            python -m purffle_shorts.dashboard_worker
+          fi

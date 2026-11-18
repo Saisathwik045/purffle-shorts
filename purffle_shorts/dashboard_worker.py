@@ -1,6 +1,7 @@
 """Pull authorized jobs from the private dashboard and reuse the existing clipper on Linux CPU."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -134,9 +135,18 @@ def process(client: DashboardClient, job: dict, root: Path, *, synthetic_fixture
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check-connection", action="store_true")
+    args = parser.parse_args()
     if platform.system() != "Linux":
         raise RuntimeError("Dashboard processing requires a remote Linux cloud runner")
     client = DashboardClient()
+    if args.check_connection:
+        result = client.request("POST", "/api/worker/health", json={})
+        if not result.get("connected") or not result.get("storage_bound"):
+            raise RuntimeError("Private dashboard connection or storage binding is incomplete")
+        print(f"Private dashboard connection verified at {result['checked_at']}; no job was claimed and no media operation or YouTube upload was attempted")
+        return
     job = client.claim()
     if not job:
         print("No authorized queued jobs. Worker heartbeat recorded.")

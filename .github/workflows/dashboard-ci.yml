@@ -52,8 +52,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: CPU media tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - run: npm --prefix dashboard ci --no-audit --no-fund
       - run: npm --prefix dashboard run build
       - run: pip install -r cloud/requirements.lock && pip install --no-deps -e .

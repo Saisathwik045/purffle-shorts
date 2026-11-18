@@ -154,7 +154,7 @@ async function encryptTokens(env, tokens) {
 async function launch(env, db, id, count, attempt = 1, reset = false) {
   try {
     requireGeneration(env);
-    if (reset) await cleanup(env, db, { jobId: id });
+    if (reset) await cleanup(env, db, { jobId: id, expectedAttempt: attempt });
     await reserve(db, id, count);
   } catch (error) {
     await db.batch([
@@ -215,6 +215,22 @@ export async function api(request, env) {
     );
   if (path.startsWith("/api/worker/")) {
     await workerAuth(request, env);
+    if (request.method === "POST" && path === "/api/worker/health") {
+      await body(request);
+      const checked_at = now();
+      await statement(
+        db,
+        "INSERT INTO worker_heartbeats(id,last_seen) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen",
+        "cpu",
+        checked_at,
+      ).run();
+      return json({
+        connected: true,
+        checked_at,
+        storage_bound: !!env.BUCKET,
+        publishing_enabled: false,
+      });
+    }
     if (request.method === "POST" && path === "/api/worker/claim") {
       requireGeneration(env);
       const claimInput = await body(request);
@@ -418,7 +434,7 @@ export async function api(request, env) {
             j.attempt,
           ),
         ]);
-        await cleanup(env, db, { jobId: j.id });
+        await cleanup(env, db, { jobId: j.id, expectedAttempt: j.attempt });
         return json({ state: "FAILED" });
       }
       if (j.state !== "GENERATING_METADATA")
@@ -657,22 +673,45 @@ export async function api(request, env) {
           "Only a queued job can request another worker wake. Active work is not duplicated.",
           409,
         );
+      requireGeneration(env);
+      if (!j.storage_reserved) await reserve(db, j.id, j.options.count);
       await dispatch(env, db, j.id);
       return json({ state: j.state, dispatch_status: "ACCEPTED" });
     }
     if (request.method === "POST" && jobRoute[2] === "cleanup") {
       if (!["FAILED", "READY_FOR_REVIEW", "APPROVED"].includes(j.state))
+        throw new Problem("Only inactive jobs can be cleaned up.", 409);
+      const locked = await one(
+        db,
+        "UPDATE jobs SET state='CREATED' WHERE id=? AND owner=? AND state=? AND attempt=? RETURNING id",
+        j.id,
+        owner,
+        j.state,
+        j.attempt,
+      );
+      if (!locked)
         throw new Problem(
-          "Only inactive generated or failed jobs can be cleaned up.",
+          "This job changed. Refresh before removing its files.",
           409,
         );
-      await cleanup(env, db, { jobId: j.id });
+      try {
+        await cleanup(env, db, { jobId: j.id, expectedAttempt: j.attempt });
+      } catch (error) {
+        await statement(
+          db,
+          "UPDATE jobs SET state='FAILED',retryable=1,error='Private file cleanup was interrupted. Retry cleanup before processing.' WHERE id=? AND attempt=? AND state='CREATED'",
+          j.id,
+          j.attempt,
+        ).run();
+        throw error;
+      }
       await db.batch([
         statement(
           db,
-          "UPDATE jobs SET state='FAILED',retryable=1,error='Generated files removed by owner. Processing can be retried with current authorization.',updated_at=? WHERE id=?",
+          "UPDATE jobs SET state='FAILED',retryable=1,error='Generated files removed by owner. Processing can be retried with current authorization.',updated_at=? WHERE id=? AND attempt=? AND state='CREATED'",
           now(),
           j.id,
+          j.attempt,
         ),
         event(
           db,

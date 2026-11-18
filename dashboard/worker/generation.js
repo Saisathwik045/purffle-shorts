@@ -113,68 +113,107 @@ export async function dispatch(env, db, jobId) {
     .bind("ACCEPTED", jobId)
     .run();
 }
-export async function cleanup(env, db, { jobId = null } = {}) {
-  const date = new Date(Date.now() - RETENTION_DAYS * 86400000).toISOString();
-  const rows = await db
-    .prepare(
-      jobId
-        ? "SELECT c.* FROM clips c WHERE c.job_id=?"
-        : "SELECT c.* FROM clips c JOIN jobs j ON j.id=c.job_id WHERE c.created_at<? AND j.state NOT IN ('VALIDATING','TRANSCRIBING','SELECTING_HIGHLIGHTS','RENDERING','GENERATING_METADATA','PUBLISHING') LIMIT 50",
-    )
-    .bind(jobId || date)
-    .all();
-  const affected = new Set();
-  for (const clip of rows.results) {
-    const publication = await db
-      .prepare("SELECT id FROM publications WHERE clip_id=?")
-      .bind(clip.id)
+export async function cleanup(
+  env,
+  db,
+  { jobId = null, expectedAttempt = null } = {},
+) {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400000).toISOString();
+  const targets = jobId
+    ? [{ id: jobId }]
+    : (
+        await db
+          .prepare(
+            "SELECT DISTINCT j.id FROM jobs j JOIN clips c ON c.job_id=j.id WHERE c.created_at<? AND j.state IN ('FAILED','READY_FOR_REVIEW','APPROVED') AND NOT EXISTS(SELECT 1 FROM publications p WHERE p.clip_id=c.id) LIMIT 10",
+          )
+          .bind(cutoff)
+          .all()
+      ).results;
+  let removed = 0;
+  for (const target of targets) {
+    const job = await db
+      .prepare("SELECT id,state,attempt FROM jobs WHERE id=?")
+      .bind(target.id)
       .first();
-    if (publication) continue;
-    affected.add(clip.job_id);
-    const keys = [
-      clip.video_key,
-      clip.subtitle_key,
-      `${clip.job_id}/${clip.id}/short.mp4`,
-      `${clip.job_id}/${clip.id}/captions.srt`,
-    ];
-    if (env.BUCKET) await env.BUCKET.delete([...new Set(keys.filter(Boolean))]);
-    await db.prepare("DELETE FROM clips WHERE id=?").bind(clip.id).run();
-  }
-  if (!jobId)
-    for (const id of affected) {
-      const empty = await db
+    if (!job || (expectedAttempt !== null && job.attempt !== expectedAttempt))
+      continue;
+    let ownsLock = false;
+    if (job.state !== "CREATED") {
+      if (!["FAILED", "READY_FOR_REVIEW", "APPROVED"].includes(job.state))
+        continue;
+      const locked = await db
         .prepare(
-          "SELECT id,state,attempt FROM jobs WHERE id=? AND NOT EXISTS(SELECT 1 FROM clips WHERE job_id=?)",
+          "UPDATE jobs SET state='CREATED' WHERE id=? AND state=? AND attempt=? RETURNING id",
         )
-        .bind(id, id)
+        .bind(job.id, job.state, job.attempt)
         .first();
-      if (empty && ["READY_FOR_REVIEW", "APPROVED"].includes(empty.state))
-        await db.batch([
-          db
-            .prepare(
-              "UPDATE jobs SET state='FAILED',retryable=1,error='Seven-day media retention ended. Processing can be retried with current source rights.',updated_at=? WHERE id=?",
-            )
-            .bind(new Date().toISOString(), id),
-          db
+      if (!locked) continue;
+      ownsLock = true;
+    } else if (!jobId) continue;
+    try {
+      const clips = await db
+        .prepare(
+          "SELECT c.* FROM clips c WHERE c.job_id=? AND NOT EXISTS(SELECT 1 FROM publications p WHERE p.clip_id=c.id)" +
+            (jobId ? "" : " AND c.created_at<?"),
+        )
+        .bind(...(jobId ? [job.id] : [job.id, cutoff]))
+        .all();
+      for (const clip of clips.results) {
+        const keys = [
+          clip.video_key,
+          clip.subtitle_key,
+          `${clip.job_id}/${clip.id}/short.mp4`,
+          `${clip.job_id}/${clip.id}/captions.srt`,
+        ];
+        if (env.BUCKET)
+          await env.BUCKET.delete([...new Set(keys.filter(Boolean))]);
+        await db.prepare("DELETE FROM clips WHERE id=?").bind(clip.id).run();
+        removed++;
+      }
+      const left = await db
+        .prepare("SELECT COUNT(*) n FROM clips WHERE job_id=?")
+        .bind(job.id)
+        .first();
+      if (!left.n)
+        await db
+          .prepare(
+            "UPDATE jobs SET storage_reserved=0 WHERE id=? AND attempt=? AND state='CREATED'",
+          )
+          .bind(job.id, job.attempt)
+          .run();
+      if (ownsLock) {
+        const expired = !left.n && job.state !== "FAILED";
+        await db
+          .prepare(
+            "UPDATE jobs SET state=?,retryable=CASE WHEN ? THEN 1 ELSE retryable END,error=CASE WHEN ? THEN 'Seven-day media retention ended. Processing can be retried with current source rights.' ELSE error END,updated_at=? WHERE id=? AND attempt=? AND state='CREATED'",
+          )
+          .bind(
+            expired ? "FAILED" : job.state,
+            expired ? 1 : 0,
+            expired ? 1 : 0,
+            new Date().toISOString(),
+            job.id,
+            job.attempt,
+          )
+          .run();
+        if (expired)
+          await db
             .prepare(
               "INSERT INTO job_events(job_id,state,message,created_at,attempt) VALUES(?,'FAILED','Generated files removed by seven-day retention. Job history is retained.',?,?)",
             )
-            .bind(id, new Date().toISOString(), empty.attempt),
-        ]);
+            .bind(job.id, new Date().toISOString(), job.attempt)
+            .run();
+      }
+    } catch (error) {
+      if (ownsLock)
+        await db
+          .prepare(
+            "UPDATE jobs SET state='FAILED',retryable=1,error='Private storage cleanup was interrupted. Retry cleanup before processing more media.' WHERE id=? AND attempt=? AND state='CREATED'",
+          )
+          .bind(job.id, job.attempt)
+          .run();
+      throw error;
     }
-  if (jobId)
-    await db
-      .prepare(
-        "UPDATE jobs SET storage_reserved=0 WHERE id=? AND NOT EXISTS(SELECT 1 FROM clips WHERE job_id=?)",
-      )
-      .bind(jobId, jobId)
-      .run();
-  else
-    await db
-      .prepare(
-        "UPDATE jobs SET storage_reserved=0 WHERE state NOT IN ('QUEUED','VALIDATING','TRANSCRIBING','SELECTING_HIGHLIGHTS','RENDERING','GENERATING_METADATA','PUBLISHING') AND NOT EXISTS(SELECT 1 FROM clips WHERE clips.job_id=jobs.id)",
-      )
-      .bind()
-      .run();
-  return rows.results.length;
+  }
+  return removed;
 }

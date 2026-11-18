@@ -29,7 +29,7 @@ def main():
         root = Path(folder)
         source = root / "synthetic.mp4"
         ffmpeg.run(["-f", "lavfi", "-i", "color=c=0x152333:s=640x360:r=30",
-                    "-f", "lavfi", "-i", f"flite=text='{TEXT}':voice=slt", "-c:v", "libx264",
+                    "-i", str(Path(__file__).parent / "fixtures" / "synthetic-speech.opus"), "-c:v", "libx264",
                     "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(source)])
         env = dict(os.environ, PURFFLE_E2E_ROOT=str(root))
         backend = subprocess.Popen(["node", "scripts/e2e-server.mjs"], cwd="dashboard", env=env)
