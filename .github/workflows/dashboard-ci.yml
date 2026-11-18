@@ -37,6 +37,7 @@ jobs:
         run: |
           npm install --no-save --package-lock=false --prefix /tmp/purffle-browser playwright@1.56.1
           /tmp/purffle-browser/node_modules/.bin/playwright install --with-deps chromium
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Synthetic review and publishing-preparation browser checks
         env:
           NODE_PATH: /tmp/purffle-browser/node_modules
