@@ -1,3 +1,5 @@
+> **Cloud-only clipping:** See the [cloud audit and setup guide](docs/cloud-pipeline-audit.md) for CPU Whisper, a reviewed source queue, scheduled GitHub Actions, cost controls and uploads disabled by default.
+
 <div align="center">
 
 <picture>

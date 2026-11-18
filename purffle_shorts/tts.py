@@ -275,13 +275,13 @@ def whisper_model(settings: Settings | None = None) -> str:
 
 
 def _align_faster_whisper(audio: Path, language: str, model_name: str = "small", *, prompt: str = "",
-                          vad: bool = False) -> list[Word]:
+                          vad: bool = False, device: str = "auto") -> list[Word]:
     """Word timestamps from faster-whisper. ``prompt`` (the known script) helps it spell names and numbers the
     way they are written; ``vad`` skips silence and music in long recordings and stops it from inventing text."""
     from faster_whisper import WhisperModel  # optional dependency
-    cuda = _cuda()
+    cuda = device != "cpu" and _cuda()
     with _model_lock:
-        key = f"whisper:{model_name}"
+        key = f"whisper:{model_name}:{'cuda' if cuda else 'cpu'}"
         model = _model_cache.get(key)
         if model is None:
             model = _model_cache[key] = WhisperModel(model_name, device="cuda" if cuda else "cpu",
