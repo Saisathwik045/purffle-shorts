@@ -1,3 +1,5 @@
+> **Private cloud dashboard:** [Open Purffle Cloud Studio](https://purffle-shorts-cloud.turfylamb4.chatgpt.site) — browser-only access, persistent jobs, source authorization, review and uploads disabled. See the [Phase 1 operating guide](docs/cloud-dashboard.md) for worker and account setup.
+
 > **Cloud-only clipping:** See the [cloud audit and setup guide](docs/cloud-pipeline-audit.md) for CPU Whisper, a reviewed source queue, scheduled GitHub Actions, cost controls and uploads disabled by default.
 
 <div align="center">

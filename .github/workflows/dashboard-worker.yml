@@ -1,0 +1,73 @@
+name: Dashboard CPU worker
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Specific authorized queued job to claim
+        required: false
+        type: string
+      verify_storage:
+        description: Verify private storage after free allowance confirmation (no video processing)
+        required: false
+        type: boolean
+        default: false
+      verify_connection:
+        description: Check private dashboard access without claiming work
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: purffle-dashboard-worker
+  cancel-in-progress: false
+jobs:
+  process:
+    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true' && (inputs.verify_storage == true || inputs.verify_connection == true || vars.PURFFLE_ACTIONS_APP_USE_AUTHORIZED == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DOWNLOAD_TIMEOUT: '120'
+      HF_HUB_ETAG_TIMEOUT: '30'
+      PURFFLE_DASHBOARD_JOB_ID: ${{ inputs.job_id }}
+      PURFFLE_RUNNER_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PURFFLE_DASHBOARD_URL: ${{ vars.PURFFLE_DASHBOARD_URL }}
+      PURFFLE_DASHBOARD_WORKER_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_WORKER_TOKEN }}
+      PURFFLE_DASHBOARD_SITE_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check private cloud access configuration
+        run: |
+          test -n "$PURFFLE_DASHBOARD_URL" || { echo 'Configure the dashboard URL repository variable'; exit 1; }
+          test -n "$PURFFLE_DASHBOARD_WORKER_TOKEN" || { echo 'Configure the worker secret'; exit 1; }
+          test -n "$PURFFLE_DASHBOARD_SITE_TOKEN" || { echo 'Configure private Site service access'; exit 1; }
+      - name: CPU media tools
+        if: inputs.verify_connection != true && inputs.verify_storage != true
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg fonts-dejavu-core
+          fi
+      - name: Reproduce CPU environment
+        run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - name: Process one authorized queued job (uploads disabled)
+        env:
+          VERIFY_CONNECTION: ${{ inputs.verify_connection }}
+          VERIFY_STORAGE: ${{ inputs.verify_storage }}
+        run: |
+          if [ "$VERIFY_STORAGE" = 'true' ]; then
+            python -m purffle_shorts.dashboard_worker --verify-storage
+          elif [ "$VERIFY_CONNECTION" = 'true' ]; then
+            python -m purffle_shorts.dashboard_worker --check-connection
+          else
+            python -m purffle_shorts.dashboard_worker
+          fi

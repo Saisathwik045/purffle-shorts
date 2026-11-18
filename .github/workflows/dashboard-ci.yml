@@ -1,0 +1,62 @@
+name: Cloud dashboard checks
+on:
+  pull_request:
+    paths:
+      - dashboard/**
+      - purffle_shorts/dashboard_worker.py
+      - tests/test_dashboard_worker.py
+      - cloud/dashboard_e2e.py
+      - cloud/prepare_whisper.py
+      - .github/workflows/dashboard-*.yml
+  push:
+    branches: [main]
+    paths:
+      - dashboard/**
+      - purffle_shorts/dashboard_worker.py
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm --prefix dashboard ci --no-audit --no-fund
+      - run: npm --prefix dashboard test
+      - run: node --check dashboard/public/app.js
+      - run: npm --prefix dashboard run build
+
+  real-cloud-generation:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DOWNLOAD_TIMEOUT: '120'
+      HF_HUB_ETAG_TIMEOUT: '30'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm --prefix dashboard ci --no-audit --no-fund
+      - run: npm --prefix dashboard run build
+      - run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - name: Download the public Whisper base snapshot on this cloud runner
+        run: python cloud/prepare_whisper.py --github-env "$GITHUB_ENV"
+      - name: Real CPU generation through private-preview test API
+        run: python cloud/dashboard_e2e.py

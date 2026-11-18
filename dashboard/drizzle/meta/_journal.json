@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794976949222,
+      "tag": "0000_dashboard",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794978385603,
+      "tag": "0001_cloud_generation",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794982136062,
+      "tag": "0002_worker_verification",
+      "breakpoints": true
+    }
+  ]
+}
