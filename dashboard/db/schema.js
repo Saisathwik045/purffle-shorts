@@ -22,6 +22,10 @@ export const jobs = sqliteTable(
     error: text(),
     retryable: integer().notNull().default(0),
     attempt: integer().notNull().default(1),
+    storage_reserved: integer().notNull().default(0),
+    dispatch_status: text(),
+    dispatch_error: text(),
+    runner_url: text(),
     lease_id: text(),
     lease_expires: text(),
     created_at: text().notNull(),
@@ -96,3 +100,13 @@ export const workerHeartbeats = sqliteTable("worker_heartbeats", {
   id: text().primaryKey(),
   last_seen: text().notNull(),
 });
+
+export const operationBudgets = sqliteTable(
+  "operation_budgets",
+  {
+    period: text().notNull(),
+    kind: text().notNull(),
+    used: integer().notNull().default(0),
+  },
+  (t) => [unique().on(t.period, t.kind)],
+);

@@ -1,4 +1,14 @@
 import {
+  generationStatus,
+  requireGeneration,
+  reserve,
+  charge,
+  dispatch,
+  cleanup,
+  MAX_VIDEO_BYTES,
+  MAX_SUBTITLE_BYTES,
+} from "./generation.js";
+import {
   ACTIVE,
   STAGES,
   DEFAULTS,
@@ -141,6 +151,59 @@ async function encryptTokens(env, tokens) {
   );
   return JSON.stringify({ iv: [...iv], data: [...new Uint8Array(encrypted)] });
 }
+async function launch(env, db, id, count, attempt = 1, reset = false) {
+  try {
+    requireGeneration(env);
+    if (reset) await cleanup(env, db, { jobId: id });
+    await reserve(db, id, count);
+  } catch (error) {
+    await db.batch([
+      statement(
+        db,
+        "UPDATE jobs SET state='FAILED',error=?,retryable=1 WHERE id=?",
+        error.message,
+        id,
+      ),
+      event(db, id, "FAILED", error.message, attempt),
+    ]);
+    return { state: "FAILED", dispatch_status: "BLOCKED" };
+  }
+  await db.batch([
+    statement(
+      db,
+      "UPDATE jobs SET state='QUEUED',updated_at=?,dispatch_status='PENDING' WHERE id=?",
+      now(),
+      id,
+    ),
+    event(
+      db,
+      id,
+      "QUEUED",
+      "Storage reserved. Requesting a standard public GitHub Linux worker.",
+      attempt,
+    ),
+  ]);
+  try {
+    await dispatch(env, db, id);
+  } catch (error) {
+    // A dispatch timeout can be ambiguous. Keep one queued job and permit only another wake request.
+    await statement(
+      db,
+      "UPDATE jobs SET dispatch_status='UNCONFIRMED',dispatch_error=? WHERE id=?",
+      error.message,
+      id,
+    ).run();
+    await event(
+      db,
+      id,
+      "QUEUED",
+      "Worker dispatch was not confirmed. Check connection settings and retry waking this same job.",
+      attempt,
+    ).run();
+    return { state: "QUEUED", dispatch_status: "UNCONFIRMED" };
+  }
+  return { state: "QUEUED", dispatch_status: "ACCEPTED" };
+}
 export async function api(request, env) {
   const url = new URL(request.url),
     path = url.pathname,
@@ -153,7 +216,9 @@ export async function api(request, env) {
   if (path.startsWith("/api/worker/")) {
     await workerAuth(request, env);
     if (request.method === "POST" && path === "/api/worker/claim") {
-      await body(request);
+      requireGeneration(env);
+      const claimInput = await body(request);
+      await cleanup(env, db);
       await statement(
         db,
         "INSERT INTO worker_heartbeats(id,last_seen) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen",
@@ -192,7 +257,7 @@ export async function api(request, env) {
         await db.batch([
           statement(
             db,
-            "UPDATE jobs SET state='AWAITING_SOURCE_AUTHORIZATION',updated_at=? WHERE id=? AND state='QUEUED'",
+            "UPDATE jobs SET state='AWAITING_SOURCE_AUTHORIZATION',storage_reserved=0,updated_at=? WHERE id=? AND state='QUEUED'",
             now(),
             j.id,
           ),
@@ -207,10 +272,12 @@ export async function api(request, env) {
       const claim = uuid();
       const row = await one(
         db,
-        `UPDATE jobs SET state='VALIDATING',lease_id=?,lease_expires=?,updated_at=? WHERE id=(SELECT id FROM jobs WHERE state='QUEUED' AND json_extract(authorization,'$.approved')=1 AND (json_extract(authorization,'$.expires_on') IS NULL OR json_extract(authorization,'$.expires_on')>=?) ORDER BY created_at LIMIT 1) AND state='QUEUED' RETURNING *`,
+        `UPDATE jobs SET state='VALIDATING',lease_id=?,lease_expires=?,updated_at=? WHERE id=(SELECT id FROM jobs WHERE state='QUEUED' AND storage_reserved>0 AND (?='' OR id=?) AND json_extract(authorization,'$.approved')=1 AND (json_extract(authorization,'$.expires_on') IS NULL OR json_extract(authorization,'$.expires_on')>=?) ORDER BY created_at LIMIT 1) AND state='QUEUED' RETURNING *`,
         claim,
         new Date(Date.now() + 45 * 60000).toISOString(),
         now(),
+        String(claimInput.job_id || ""),
+        String(claimInput.job_id || ""),
         now().slice(0, 10),
       );
       if (!row) return json({ job: null });
@@ -221,6 +288,18 @@ export async function api(request, env) {
         "CPU worker claimed this job. Validating the authorized media file before transcription.",
         row.attempt,
       ).run();
+      if (
+        claimInput.runner_url &&
+        /^https:\/\/github\.com\/Saisathwik045\/purffle-shorts\/actions\/runs\/\d+$/.test(
+          claimInput.runner_url,
+        )
+      )
+        await statement(
+          db,
+          "UPDATE jobs SET runner_url=? WHERE id=?",
+          claimInput.runner_url,
+          row.id,
+        ).run();
       return json({ job: { ...parseJob(row), lease_id: claim } });
     }
     const match = path.match(
@@ -230,6 +309,7 @@ export async function api(request, env) {
       /^\/api\/worker\/jobs\/([\w-]+)\/clips\/([\w-]+)\/(video|subtitles)$/,
     );
     if (upload && request.method === "PUT") {
+      requireGeneration(env);
       const j = await lease(db, upload[1], request.headers.get("x-job-lease"));
       if (j.state !== "GENERATING_METADATA")
         throw new Problem(
@@ -247,16 +327,28 @@ export async function api(request, env) {
       if (!env.BUCKET)
         throw new Problem("Private clip storage is not configured.", 503);
       const video = upload[3] === "video",
-        limit = video ? 100 * 1024 * 1024 : 2 * 1024 * 1024;
+        limit = video ? MAX_VIDEO_BYTES : MAX_SUBTITLE_BYTES;
       const size = Number(request.headers.get("content-length"));
       if (!size || size > limit)
         throw new Problem("Clip file exceeds the permitted upload size.", 413);
+      if (
+        j.storage_reserved <
+        j.options.count * (MAX_VIDEO_BYTES + MAX_SUBTITLE_BYTES)
+      )
+        throw new Problem("Clip storage was not reserved.", 409);
+      await charge(db, "r2-write", 2000);
       const key = `${j.id}/${c.id}/${video ? "short.mp4" : "captions.srt"}`;
       await env.BUCKET.put(key, request.body, {
         httpMetadata: {
           contentType: video ? "video/mp4" : "application/x-subrip",
         },
       });
+      try {
+        await lease(db, j.id, request.headers.get("x-job-lease"));
+      } catch (error) {
+        await env.BUCKET.delete(key);
+        throw error;
+      }
       await statement(
         db,
         `UPDATE clips SET ${video ? "video_key" : "subtitle_key"}=? WHERE id=?`,
@@ -266,9 +358,19 @@ export async function api(request, env) {
       return json({ saved: true });
     }
     if (match && request.method === "POST") {
+      if (match[2] === "complete") {
+        const done = await one(
+          db,
+          "SELECT state FROM jobs WHERE id=?",
+          match[1],
+        );
+        if (done?.state === "READY_FOR_REVIEW")
+          return json({ state: done.state });
+      }
       const j = await lease(db, match[1], request.headers.get("x-job-lease")),
         input = await body(request);
       if (match[2] === "stage") {
+        if (input.state === j.state) return json({ state: j.state });
         if (
           !STAGES[j.state]?.includes(input.state) ||
           input.state === "FAILED" ||
@@ -316,6 +418,7 @@ export async function api(request, env) {
             j.attempt,
           ),
         ]);
+        await cleanup(env, db, { jobId: j.id });
         return json({ state: "FAILED" });
       }
       if (j.state !== "GENERATING_METADATA")
@@ -335,6 +438,14 @@ export async function api(request, env) {
           input.duration > 180
         )
           throw new Problem("Invalid generated clip metadata.");
+        const previous = await one(
+          db,
+          "SELECT id FROM clips WHERE job_id=? AND attempt=? AND position=?",
+          j.id,
+          j.attempt,
+          input.position,
+        );
+        if (previous) return json({ id: previous.id });
         const id = uuid();
         await statement(
           db,
@@ -429,6 +540,7 @@ export async function api(request, env) {
       preferences: preferences ? JSON.parse(preferences.preferences) : DEFAULTS,
       worker: heartbeat || null,
       publishing_enabled: false,
+      generation: generationStatus(env),
       oauth_configured: !!(
         env.GOOGLE_CLIENT_ID &&
         env.GOOGLE_CLIENT_SECRET &&
@@ -456,6 +568,7 @@ export async function api(request, env) {
     if (!["video", "livestream"].includes(input.source_kind))
       throw new Problem("Choose video or livestream.");
     const auth = authorization(input.authorization, owner);
+    if (auth) requireGeneration(env);
     const fingerprint = await hash(JSON.stringify([source.url, opts]));
     const existing = await one(
       db,
@@ -475,7 +588,7 @@ export async function api(request, env) {
     const id = uuid(),
       stamp = now(),
       meta = await metadata(source.url),
-      state = auth ? "QUEUED" : "AWAITING_SOURCE_AUTHORIZATION";
+      state = auth ? "CREATED" : "AWAITING_SOURCE_AUTHORIZATION";
     try {
       await db.batch([
         statement(
@@ -521,10 +634,11 @@ export async function api(request, env) {
         );
       throw error;
     }
-    return json({ id, state }, 201);
+    const result = auth ? await launch(env, db, id, opts.count) : { state };
+    return json({ id, ...result }, 201);
   }
   const jobRoute = path.match(
-    /^\/api\/jobs\/([\w-]+)(?:\/(authorization|retry))?$/,
+    /^\/api\/jobs\/([\w-]+)(?:\/(authorization|retry|dispatch|cleanup))?$/,
   );
   if (jobRoute) {
     const j = await ownerJob(db, jobRoute[1], owner);
@@ -537,33 +651,72 @@ export async function api(request, env) {
           j.id,
         ),
       });
+    if (request.method === "POST" && jobRoute[2] === "dispatch") {
+      if (j.state !== "QUEUED")
+        throw new Problem(
+          "Only a queued job can request another worker wake. Active work is not duplicated.",
+          409,
+        );
+      await dispatch(env, db, j.id);
+      return json({ state: j.state, dispatch_status: "ACCEPTED" });
+    }
+    if (request.method === "POST" && jobRoute[2] === "cleanup") {
+      if (!["FAILED", "READY_FOR_REVIEW", "APPROVED"].includes(j.state))
+        throw new Problem(
+          "Only inactive generated or failed jobs can be cleaned up.",
+          409,
+        );
+      await cleanup(env, db, { jobId: j.id });
+      await db.batch([
+        statement(
+          db,
+          "UPDATE jobs SET state='FAILED',retryable=1,error='Generated files removed by owner. Processing can be retried with current authorization.',updated_at=? WHERE id=?",
+          now(),
+          j.id,
+        ),
+        event(
+          db,
+          j.id,
+          "FAILED",
+          "Generated files removed by the owner; job history is retained.",
+          j.attempt,
+        ),
+      ]);
+      return json({ deleted: true });
+    }
     if (request.method === "POST" && jobRoute[2] === "authorization") {
+      requireGeneration(env);
       if (j.state !== "AWAITING_SOURCE_AUTHORIZATION")
         throw new Problem(
-          "Only jobs awaiting source authorization can be authorized.",
+          "Only jobs awaiting authorization can be authorized.",
           409,
         );
       const auth = authorization(await body(request), owner);
       if (!auth)
         throw new Problem("Explicit source authorization is required.");
-      await db.batch([
-        statement(
-          db,
-          "UPDATE jobs SET authorization=?,state='QUEUED',updated_at=? WHERE id=? AND owner=? AND state='AWAITING_SOURCE_AUTHORIZATION'",
-          JSON.stringify(auth),
-          now(),
-          j.id,
-          owner,
-        ),
-        event(
-          db,
-          j.id,
-          "QUEUED",
-          "Source rights and authorized media access reviewed. Waiting for a CPU worker.",
-          j.attempt,
-        ),
-      ]);
-      return json({ state: "QUEUED" });
+      const updated = await one(
+        db,
+        "UPDATE jobs SET authorization=?,state='CREATED',updated_at=? WHERE id=? AND owner=? AND state='AWAITING_SOURCE_AUTHORIZATION' RETURNING id",
+        JSON.stringify(auth),
+        now(),
+        j.id,
+        owner,
+      );
+      if (!updated)
+        throw new Problem(
+          "Source authorization was already updated. Refresh this job.",
+          409,
+        );
+      await event(
+        db,
+        j.id,
+        "VALIDATING",
+        "Source rights and permitted media access recorded. Reserving cloud capacity.",
+        j.attempt,
+      ).run();
+      return json(
+        await launch(env, db, j.id, j.options.count, j.attempt, true),
+      );
     }
     if (request.method === "POST" && jobRoute[2] === "retry") {
       if (j.state !== "FAILED" || j.retryable !== 1)
@@ -594,10 +747,11 @@ export async function api(request, env) {
         ).run();
         return json({ state: "AWAITING_SOURCE_AUTHORIZATION" });
       }
+      requireGeneration(env);
       // Claim retry atomically before cleanup. Previous attempt files remain private and are not presented as generated clips.
       const retried = await one(
         db,
-        "UPDATE jobs SET state='QUEUED',attempt=attempt+1,error=NULL,retryable=0,lease_id=NULL,lease_expires=NULL,updated_at=? WHERE id=? AND owner=? AND state='FAILED' AND attempt=? RETURNING id",
+        "UPDATE jobs SET state='CREATED',attempt=attempt+1,error=NULL,retryable=0,lease_id=NULL,lease_expires=NULL,updated_at=? WHERE id=? AND owner=? AND state='FAILED' AND attempt=? RETURNING id",
         now(),
         j.id,
         owner,
@@ -615,7 +769,9 @@ export async function api(request, env) {
         "Processing retry requested by the workspace owner.",
         j.attempt + 1,
       ).run();
-      return json({ state: "QUEUED" });
+      return json(
+        await launch(env, db, j.id, j.options.count, j.attempt + 1, true),
+      );
     }
   }
   const clipRoute = path.match(
@@ -638,7 +794,7 @@ export async function api(request, env) {
       throw new Problem("Generated clip not found.", 404);
     if (clipRoute[2] === "publish")
       throw new Problem(
-        "Publishing is disabled in Phase 1. Connection and review do not authorize uploads.",
+        "Publishing remains disabled. Connection and review do not authorize uploads.",
         403,
       );
     if (clipRoute[2] === "review" && request.method === "POST") {
@@ -689,6 +845,12 @@ export async function api(request, env) {
       request.method === "GET" &&
       ["video", "subtitles"].includes(clipRoute[2])
     ) {
+      if (env.FREE_TIER_VERIFIED !== "true")
+        throw new Problem(
+          "Private media serving is paused until free storage and operation allowances are verified.",
+          503,
+        );
+      await charge(db, "r2-read", 10000);
       const key = clipRoute[2] === "video" ? c.video_key : c.subtitle_key;
       const object =
         key && env.BUCKET

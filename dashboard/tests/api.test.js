@@ -1,52 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { D1 } from "./support/d1.js";
 import { api } from "../worker/index.js";
 import { youtubeURL, options, authorization } from "../worker/domain.js";
-class D1 {
-  constructor() {
-    this.db = new DatabaseSync(":memory:");
-    this.db.exec(
-      readFileSync(
-        new URL("../drizzle/0000_dashboard.sql", import.meta.url),
-        "utf8",
-      ),
-    );
-  }
-  prepare(sql) {
-    const db = this.db;
-    return {
-      bind(...args) {
-        return {
-          async first() {
-            return db.prepare(sql).get(...args) || null;
-          },
-          async all() {
-            return { results: db.prepare(sql).all(...args) };
-          },
-          async run() {
-            return db.prepare(sql).run(...args);
-          },
-          _run() {
-            return db.prepare(sql).all(...args);
-          },
-        };
-      },
-    };
-  }
-  async batch(items) {
-    this.db.exec("BEGIN");
-    try {
-      const out = items.map((x) => x._run());
-      this.db.exec("COMMIT");
-      return out;
-    } catch (e) {
-      this.db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-}
 const auth = () => ({
   approved: true,
   license: "owned",
@@ -74,8 +30,12 @@ function context() {
   return {
     DB: new D1(),
     WORKER_TOKEN: "worker-test-secret",
+    FREE_TIER_VERIFIED: "true",
+    GITHUB_DISPATCH_TOKEN: "test-token",
+    WORKER_CONNECTION_VERIFIED_AT: new Date().toISOString(),
     BUCKET: {
       async put() {},
+      async delete() {},
       async get() {
         return null;
       },
@@ -113,7 +73,15 @@ async function call(
 const workerHeaders = { Authorization: "Bearer worker-test-secret" };
 const stageHeaders = (lease) => ({ ...workerHeaders, "x-job-lease": lease });
 // Metadata availability must never be needed to create or authorize a job.
-globalThis.fetch = async () => {
+globalThis.fetch = async (url) => {
+  if (String(url).endsWith("/repos/Saisathwik045/purffle-shorts"))
+    return Response.json({
+      private: false,
+      full_name: "Saisathwik045/purffle-shorts",
+      default_branch: "main",
+    });
+  if (String(url).endsWith("/dispatches"))
+    return new Response(null, { status: 204 });
   throw new Error("Metadata unavailable");
 };
 test("canonical URLs and options reject ambiguous or unsupported input", () => {
@@ -397,4 +365,124 @@ test("expired rights leave the queue and failed retries return to authorization"
   assert.equal(retry.state, "AWAITING_SOURCE_AUTHORIZATION");
   const j = (await (await call(env, `/api/jobs/${id}`)).json()).job;
   assert.equal(j.attempt, 2);
+});
+test("generation fails closed without verified account limits; private settings still work", async () => {
+  const env = context();
+  env.FREE_TIER_VERIFIED = "false";
+  const waiting = await (await call(env, "/api/jobs", "POST", input())).json();
+  assert.equal(waiting.state, "AWAITING_SOURCE_AUTHORIZATION");
+  await assert.rejects(
+    call(env, `/api/jobs/${waiting.id}/authorization`, "POST", auth()),
+    (e) => e.status === 503,
+  );
+  await assert.rejects(
+    call(env, "/api/worker/claim", "POST", {}, null, workerHeaders),
+    (e) => e.status === 503,
+  );
+  const status = await (await call(env, "/api/bootstrap")).json();
+  assert.equal(status.generation.enabled, false);
+  assert.equal(status.jobs[0].state, "AWAITING_SOURCE_AUTHORIZATION");
+});
+test("storage reservations are atomic and monthly operation budgets stop extra work", async () => {
+  const env = context();
+  const opts = { ...input().options, count: 10 };
+  const results = await Promise.all(
+    [0, 1].map(
+      async (n) =>
+        await (
+          await call(env, "/api/jobs", "POST", {
+            ...input(),
+            url: `https://youtu.be/abcdefghij${n}`,
+            options: opts,
+            authorization: auth(),
+          })
+        ).json(),
+    ),
+  );
+  assert.equal(results.filter((x) => x.state === "QUEUED").length, 1);
+  assert.equal(results.filter((x) => x.state === "FAILED").length, 1);
+  const used = await env.DB.prepare(
+    "SELECT SUM(storage_reserved) total FROM jobs",
+  )
+    .bind()
+    .first();
+  assert(used.total <= 512 * 1024 * 1024);
+  const { charge } = await import("../worker/generation.js");
+  await charge(env.DB, "test", 1);
+  await assert.rejects(charge(env.DB, "test", 1), (e) => e.status === 429);
+});
+test("private clip cleanup removes partial objects and preserves failure history", async () => {
+  const env = context();
+  const deleted = [];
+  env.BUCKET.delete = async (keys) => deleted.push(...keys);
+  const { id } = await (
+    await call(env, "/api/jobs", "POST", { ...input(), authorization: auth() })
+  ).json();
+  const j = (
+    await (
+      await call(env, "/api/worker/claim", "POST", {}, null, workerHeaders)
+    ).json()
+  ).job;
+  for (const state of [
+    "TRANSCRIBING",
+    "SELECTING_HIGHLIGHTS",
+    "RENDERING",
+    "GENERATING_METADATA",
+  ])
+    await call(
+      env,
+      `/api/worker/jobs/${id}/stage`,
+      "POST",
+      { state },
+      null,
+      stageHeaders(j.lease_id),
+    );
+  const body = {
+    position: 1,
+    title: "Partial generated clip",
+    description: "Partially stored",
+    duration: 12,
+  };
+  const c = await (
+    await call(
+      env,
+      `/api/worker/jobs/${id}/clips`,
+      "POST",
+      body,
+      null,
+      stageHeaders(j.lease_id),
+    )
+  ).json();
+  const again = await (
+    await call(
+      env,
+      `/api/worker/jobs/${id}/clips`,
+      "POST",
+      body,
+      null,
+      stageHeaders(j.lease_id),
+    )
+  ).json();
+  assert.equal(c.id, again.id);
+  await call(
+    env,
+    `/api/worker/jobs/${id}/fail`,
+    "POST",
+    { error: "Interrupted upload" },
+    null,
+    stageHeaders(j.lease_id),
+  );
+  assert(deleted.some((k) => k.endsWith("/short.mp4")));
+  const row = await env.DB.prepare(
+    "SELECT state,storage_reserved FROM jobs WHERE id=?",
+  )
+    .bind(id)
+    .first();
+  assert.equal(row.state, "FAILED");
+  assert.equal(row.storage_reserved, 0);
+  assert(
+    (await (await call(env, `/api/jobs/${id}`)).json()).events.some(
+      (x) => x.state === "FAILED",
+    ),
+  );
 });

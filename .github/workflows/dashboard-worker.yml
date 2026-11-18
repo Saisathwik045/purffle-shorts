@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
+    inputs:
+      job_id:
+        description: Specific authorized queued job to claim
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -16,6 +21,9 @@ jobs:
     env:
       OMP_NUM_THREADS: '2'
       HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_XET: '1'
+      PURFFLE_DASHBOARD_JOB_ID: ${{ inputs.job_id }}
+      PURFFLE_RUNNER_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PURFFLE_DASHBOARD_URL: ${{ vars.PURFFLE_DASHBOARD_URL }}
       PURFFLE_DASHBOARD_WORKER_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_WORKER_TOKEN }}
       PURFFLE_DASHBOARD_SITE_TOKEN: ${{ secrets.PURFFLE_DASHBOARD_SITE_TOKEN }}
@@ -26,7 +34,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
       - name: Check private cloud access configuration
         run: |
           test -n "$PURFFLE_DASHBOARD_URL" || { echo 'Configure the dashboard URL repository variable'; exit 1; }

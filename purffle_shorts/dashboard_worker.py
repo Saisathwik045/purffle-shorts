@@ -1,16 +1,18 @@
 """Pull authorized jobs from the private dashboard and reuse the existing clipper on Linux CPU."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 
-from . import clipper
+from . import clipper, ffmpeg
 from .cloud import cloud_settings, fetch
 from .pipeline import Studio
 
@@ -31,15 +33,28 @@ class DashboardClient:
         self.job: dict | None = None
 
     def request(self, method: str, path: str, **kwargs):
-        response = self.session.request(method, self.origin + path, timeout=(15, 120),
-                                        allow_redirects=False, **kwargs)
-        # Do not print responses, URLs containing credentials, source evidence or token values.
-        if not 200 <= response.status_code < 300:
-            raise RuntimeError(f"Dashboard {method} {path}: HTTP {response.status_code}")
-        return response.json()
+        # Claim has ambiguous side effects; it must never be retried automatically.
+        attempts = 1 if path.endswith("/claim") else 3
+        for attempt in range(attempts):
+            try:
+                response = self.session.request(method, self.origin + path, timeout=(15, 120),
+                                                allow_redirects=False, **kwargs)
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt + 1 == attempts:
+                    raise RuntimeError(f"Cloud API connection failed during {path.rsplit('/', 1)[-1]}; no YouTube upload was attempted") from None
+            else:
+                if 200 <= response.status_code < 300:
+                    return response.json()
+                if response.status_code not in (408, 429, 500, 502, 503, 504) or attempt + 1 == attempts:
+                    raise RuntimeError(f"Cloud API {path.rsplit('/', 1)[-1]} returned HTTP {response.status_code}; review connection, free-tier limits and lease status")
+            if method == "PUT" and hasattr(kwargs.get("data"), "seek"):
+                kwargs["data"].seek(0)
+            time.sleep(2 ** attempt)
+        raise RuntimeError("Cloud API request did not complete")
 
     def claim(self):
-        self.job = self.request("POST", "/api/worker/claim", json={})["job"]
+        self.job = self.request("POST", "/api/worker/claim", json={"job_id": os.environ.get("PURFFLE_DASHBOARD_JOB_ID", ""),
+                                                                    "runner_url": os.environ.get("PURFFLE_RUNNER_URL", "")})["job"]
         if self.job:
             self.session.headers["X-Job-Lease"] = self.job["lease_id"]
         return self.job
@@ -66,21 +81,31 @@ def source_record(job: dict) -> dict:
             **({"expires_on": auth["expires_on"]} if auth.get("expires_on") else {})}
 
 
-def process(client: DashboardClient, job: dict, root: Path):
+def process(client: DashboardClient, job: dict, root: Path, *, synthetic_fixture: Path | None = None):
     from .cloud import validate_queue
 
     record = source_record(job)
     manifest = root / "source.json"
     manifest.write_text(json.dumps({"sources": [record]}))
     validate_queue(manifest)  # independent worker-side rights and expiry validation before downloading
-    source = fetch(record, root / "source.mp4")
+    if synthetic_fixture is None:
+        source = fetch(record, root / "source.mp4")
+    else:
+        # Internal CI injection only: no public API/CLI can select a local file or skip rights validation.
+        source = synthetic_fixture
+        if source.stat().st_size > 500 * 1024 * 1024 or hashlib.sha256(source.read_bytes()).hexdigest() != record["sha256"]:
+            raise ValueError("Synthetic verification source checksum mismatch")
+        info = ffmpeg.probe(source)
+        if not info["has_audio"] or not info["has_video"] or not 5 <= info["duration"] <= 1800:
+            raise ValueError("Synthetic verification source must meet the same media limits")
     client.update("stage", {"state": "TRANSCRIBING", "message": "Authorized media checksum and duration verified. Beginning CPU speech transcription."})
     opts = job["options"]
     resolution = {"9:16": (720, 1280), "1:1": (720, 720), "16:9": (1280, 720)}[opts["aspect"]]
     if not 1 <= int(opts["count"]) <= 10 or not 15 <= int(opts["duration"]) <= 60:
         raise ValueError("Invalid dashboard clipping limits")
     settings = cloud_settings(root / "render").with_overrides(
-        resolution=resolution, caption_style=opts["caption_style"], language=opts["language"])
+        resolution=resolution, caption_style=opts["caption_style"], language=opts["language"],
+        whisper_model=os.environ.get("PURFFLE_WHISPER_MODEL_PATH", "base"))
     stage = "TRANSCRIBING"
 
     def progress(name, _legacy_percentage, message):
@@ -101,8 +126,8 @@ def process(client: DashboardClient, job: dict, root: Path):
         meta = json.loads((result.folder / "metadata.json").read_text())
         clip = client.update("clips", {"position": index, "title": meta["title"],
                                         "description": meta["description"], "duration": meta["duration"]})
-        if result.video.stat().st_size > 100 * 1024 * 1024:
-            raise ValueError("Rendered clip exceeds the dashboard's 100 MiB storage limit")
+        if result.video.stat().st_size > 25 * 1024 * 1024:
+            raise ValueError("Rendered clip exceeds the dashboard's 25 MiB storage limit")
         client.file(clip["id"], "video", result.video)
         client.file(clip["id"], "subtitles", result.folder / "captions.srt")
     client.update("complete", {})
@@ -121,8 +146,19 @@ def main():
             process(client, job, Path(folder))
         print(f"Job {job['id']}: clips saved for review. Nothing was published.")
     except Exception as error:
+        detail = str(error).lower()
+        if "checksum" in detail:
+            message = "The authorized source checksum changed. Review the source evidence and exact media file before retrying."
+        elif "403" in detail or "proxy" in detail:
+            message = "Cloud access was denied. Check private Site credentials, source access and public Whisper download connectivity. No restriction was bypassed."
+        elif isinstance(error, ImportError):
+            message = "CPU inference dependencies are missing. Reinstall the pinned cloud requirements."
+        elif "cloud api" in detail:
+            message = str(error)
+        else:
+            message = f"{type(error).__name__}: cloud generation failed. Check the GitHub worker run for model, source or FFmpeg errors."
         try:
-            client.update("fail", {"error": f"{type(error).__name__}: cloud processing failed. Check the protected GitHub worker log; source access, model download or rendering may require attention."})
+            client.update("fail", {"error": message})
         except Exception:
             print("Could not report failure. The lease will expire visibly; review before retrying.")
         raise RuntimeError(f"Job {job['id']} failed; no upload was attempted") from None
