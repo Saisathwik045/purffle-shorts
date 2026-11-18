@@ -93,3 +93,22 @@ def test_transient_upload_retry_rewinds_same_file(monkeypatch):
     monkeypatch.setattr(W.time, "sleep", lambda _: None)
     assert client.request("PUT", "/api/worker/jobs/id/clips/id/video", data=io.BytesIO(b"actual-bytes")) == {"saved": True}
     assert bodies == [b"actual-bytes", b"actual-bytes"]
+
+
+def test_cpu_model_preparation_uses_existing_complete_snapshot_downloader(tmp_path, monkeypatch):
+    import sys
+
+    from purffle_shorts import whisper_assets
+    calls = []
+    def download(name, **kwargs):
+        calls.append((name, kwargs))
+        for filename in ("model.bin", "config.json", "tokenizer.json", "vocabulary.txt"):
+            (tmp_path / filename).write_bytes(b"unit-fixture")
+        return str(tmp_path)
+    monkeypatch.setitem(sys.modules, "faster_whisper.utils", SimpleNamespace(download_model=download))
+    assert whisper_assets.prepare() == str(tmp_path)
+    assert calls == [("base", {"revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66"})]
+    (tmp_path / "vocabulary.txt").unlink()
+    monkeypatch.setitem(sys.modules, "faster_whisper.utils", SimpleNamespace(download_model=lambda *a, **k: str(tmp_path)))
+    with pytest.raises(RuntimeError, match="incomplete"):
+        whisper_assets.prepare()
