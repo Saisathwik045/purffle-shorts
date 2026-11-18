@@ -225,6 +225,7 @@ test("authorization, atomic worker claim and state transitions are real", async 
     (e) => e.status === 409,
   );
   for (const state of [
+    "TRANSCRIBING",
     "SELECTING_HIGHLIGHTS",
     "RENDERING",
     "GENERATING_METADATA",

@@ -52,6 +52,7 @@ const labels = {
   FAILED: "Failed",
 };
 const activeStates = [
+  "VALIDATING",
   "TRANSCRIBING",
   "SELECTING_HIGHLIGHTS",
   "RENDERING",

@@ -163,7 +163,7 @@ export async function api(request, env) {
       // Expired leases fail visibly. Only a human can request a safe processing retry.
       const expired = await all(
         db,
-        `SELECT id,attempt FROM jobs WHERE state IN ('TRANSCRIBING','SELECTING_HIGHLIGHTS','RENDERING','GENERATING_METADATA') AND lease_expires<?`,
+        `SELECT id,attempt FROM jobs WHERE state IN ('VALIDATING','TRANSCRIBING','SELECTING_HIGHLIGHTS','RENDERING','GENERATING_METADATA') AND lease_expires<?`,
         now(),
       );
       for (const j of expired)
@@ -207,7 +207,7 @@ export async function api(request, env) {
       const claim = uuid();
       const row = await one(
         db,
-        `UPDATE jobs SET state='TRANSCRIBING',lease_id=?,lease_expires=?,updated_at=? WHERE id=(SELECT id FROM jobs WHERE state='QUEUED' AND json_extract(authorization,'$.approved')=1 AND (json_extract(authorization,'$.expires_on') IS NULL OR json_extract(authorization,'$.expires_on')>=?) ORDER BY created_at LIMIT 1) AND state='QUEUED' RETURNING *`,
+        `UPDATE jobs SET state='VALIDATING',lease_id=?,lease_expires=?,updated_at=? WHERE id=(SELECT id FROM jobs WHERE state='QUEUED' AND json_extract(authorization,'$.approved')=1 AND (json_extract(authorization,'$.expires_on') IS NULL OR json_extract(authorization,'$.expires_on')>=?) ORDER BY created_at LIMIT 1) AND state='QUEUED' RETURNING *`,
         claim,
         new Date(Date.now() + 45 * 60000).toISOString(),
         now(),
@@ -217,7 +217,7 @@ export async function api(request, env) {
       await event(
         db,
         row.id,
-        "TRANSCRIBING",
+        "VALIDATING",
         "CPU worker claimed this job. Validating the authorized media file before transcription.",
         row.attempt,
       ).run();

@@ -74,6 +74,7 @@ def process(client: DashboardClient, job: dict, root: Path):
     manifest.write_text(json.dumps({"sources": [record]}))
     validate_queue(manifest)  # independent worker-side rights and expiry validation before downloading
     source = fetch(record, root / "source.mp4")
+    client.update("stage", {"state": "TRANSCRIBING", "message": "Authorized media checksum and duration verified. Beginning CPU speech transcription."})
     opts = job["options"]
     resolution = {"9:16": (720, 1280), "1:1": (720, 720), "16:9": (1280, 720)}[opts["aspect"]]
     if not 1 <= int(opts["count"]) <= 10 or not 15 <= int(opts["duration"]) <= 60:

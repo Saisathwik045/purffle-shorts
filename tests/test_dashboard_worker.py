@@ -57,6 +57,6 @@ def test_bridge_reuses_clipper_and_reports_only_actual_stages(tmp_path, monkeypa
     W.process(client, job(), tmp_path)
     assert observed["upload"] is False and observed["count"] == 3
     assert [data["state"] for operation, data in updates if operation == "stage"] == [
-        "SELECTING_HIGHLIGHTS", "RENDERING", "GENERATING_METADATA"]
+        "TRANSCRIBING", "SELECTING_HIGHLIGHTS", "RENDERING", "GENERATING_METADATA"]
     assert all("progress" not in data and "percentage" not in data for _, data in updates)
     assert updates[-1] == ("complete", {}) and len(files) == 2
