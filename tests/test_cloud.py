@@ -131,3 +131,43 @@ def test_render_records_rights_and_skips_completed(tmp_path, monkeypatch):
     assert meta["rights"] == item and item["attribution"] in meta["description"]
     key = hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
     assert key in json.loads((root / "completed.json").read_text())
+
+
+@pytest.mark.parametrize("status", ["uploaded", "failed"])
+def test_authorized_upload_is_private_credited_and_claimed_before_network(tmp_path, monkeypatch, status):
+    from purffle_shorts.pipeline import Result
+    item = source()
+    queue = manifest(tmp_path, [item])
+    token = tmp_path / "authorized.json"
+    token.write_text("{}")
+    monkeypatch.setenv("PURFFLE_YOUTUBE_UPLOAD_AUTHORIZED", "true")
+    monkeypatch.setenv("YOUTUBE_TOKEN_FILE", str(token))
+    folder = tmp_path / "clip"
+    folder.mkdir()
+    (folder / "metadata.json").write_text(json.dumps({"description": "An excerpt"}))
+    root = tmp_path / "persistent"
+    result = Result(True, "clip", folder=folder, record_id=1)
+    calls = []
+    def studio(settings):
+        assert settings.privacy == "private" and settings.keep_videos
+        assert settings.publish_to == ["youtube"] and not settings.upload_captions
+        def upload(rid, output):
+            assert len(list(root.glob("upload-intent-*.json"))) == 1
+            meta = json.loads((folder / "metadata.json").read_text())
+            assert meta["rights"] == item and item["attribution"] in meta["description"]
+            calls.append(rid)
+            return status
+        return SimpleNamespace(history=SimpleNamespace(update_video=lambda *a, **k: None), upload_record=upload)
+    monkeypatch.setattr(cloud, "Studio", studio)
+    monkeypatch.setattr(cloud, "fetch", lambda item, dest: dest)
+    monkeypatch.setattr(cloud.clipper, "make_clips", lambda *a, **k: [result])
+    if status == "uploaded":
+        cloud.run(queue, root, upload=True)
+        cloud.run(queue, root, upload=True)
+    else:
+        with pytest.raises(RuntimeError, match="reconcile"):
+            cloud.run(queue, root, upload=True)
+        monkeypatch.setattr(cloud, "fetch", lambda *a: pytest.fail("Retry must stop before download"))
+        with pytest.raises(RuntimeError, match="Existing upload intent"):
+            cloud.run(queue, root, upload=True)
+    assert calls == [1]

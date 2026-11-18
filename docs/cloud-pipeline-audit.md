@@ -59,6 +59,19 @@ Official references checked during this audit:
 [YouTube license types](https://support.google.com/youtube/answer/2797468),
 [YouTube monetization policies](https://support.google.com/youtube/answer/1311392).
 
+## Dependency licenses and remaining technical limits
+
+The application, faster-whisper, CTranslate2 and Whisper weights use MIT licenses.
+The bundled fonts include their OFL notice. ffmpeg licensing depends on its build;
+the libx264 build used here has GPL components, which matters when redistributing
+binaries or containers. These software licenses do not grant rights to source videos.
+The lock file records installed versions rather than providing a software bill of
+materials, cryptographic package hashes or a CVE audit. Existing Actions use version
+tags rather than immutable commit pins. Whisper weights are fetched by model name
+rather than a pinned revision. Those are remaining supply-chain hardening tasks.
+The existing general-purpose uploader still supports legacy pickle token migration;
+the cloud entry point requires an OAuth JSON token before invoking it.
+
 ## Source rights gate
 
 `cloud/sources.json` starts empty deliberately: no supplied source had a verified reuse

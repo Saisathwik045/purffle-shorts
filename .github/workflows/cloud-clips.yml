@@ -60,7 +60,11 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: CPU media tools
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg fonts-dejavu-core
+          fi
       - name: Install CPU transcription
         run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
       - uses: actions/cache@v4
