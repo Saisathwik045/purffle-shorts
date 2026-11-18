@@ -33,6 +33,18 @@ jobs:
       - run: npm --prefix dashboard test
       - run: node --check dashboard/public/app.js
       - run: npm --prefix dashboard run build
+      - name: Install pinned browser test tools
+        run: |
+          npm install --no-save --package-lock=false --prefix /tmp/purffle-browser playwright@1.56.1
+          /tmp/purffle-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: Synthetic review and publishing-preparation browser checks
+        env:
+          NODE_PATH: /tmp/purffle-browser/node_modules
+          PURFFLE_BROWSER_VIDEO: /tmp/purffle-phase3.mp4
+        run: |
+          ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=blue:s=160x284:r=12 -t 2 -c:v libx264 -pix_fmt yuv420p -y "$PURFFLE_BROWSER_VIDEO"
+          node dashboard/scripts/phase3-browser.cjs
+
 
   real-cloud-generation:
     if: github.event.repository.private == false

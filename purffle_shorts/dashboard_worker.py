@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -66,8 +67,10 @@ class DashboardClient:
 
     def file(self, clip_id: str, kind: str, path: Path):
         with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            handle.seek(0)
             return self.request("PUT", f"/api/worker/jobs/{self.job['id']}/clips/{clip_id}/{kind}",
-                                data=handle, headers={"Content-Length": str(path.stat().st_size),
+                                data=handle, headers={"Content-Length": str(path.stat().st_size), "X-Content-SHA256": digest,
                                                       "Content-Type": "video/mp4" if kind == "video" else "application/x-subrip"})
 
 
@@ -126,8 +129,15 @@ def process(client: DashboardClient, job: dict, root: Path, *, synthetic_fixture
     client.update("stage", {"state": "GENERATING_METADATA", "message": "Saving generated clip metadata, video and subtitles to private cloud storage."})
     for index, result in enumerate(results, 1):
         meta = json.loads((result.folder / "metadata.json").read_text())
+        subtitle_text = (result.folder / "captions.srt").read_text(encoding="utf-8")
+        excerpt = " ".join(line.strip() for line in subtitle_text.splitlines()
+                           if line.strip() and not line.strip().isdigit() and "-->" not in line)
         clip = client.update("clips", {"position": index, "title": meta["title"],
-                                        "description": meta["description"], "duration": meta["duration"]})
+                                        "description": meta["description"], "duration": meta["duration"],
+                                        "transcript_excerpt": re.sub(r"<[^>]+>", "", excerpt)[:6000]})
+        if clip.get("metadata"):
+            meta.update(clip["metadata"])
+            (result.folder / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         if result.video.stat().st_size > 25 * 1024 * 1024:
             raise ValueError("Rendered clip exceeds the dashboard's 25 MiB storage limit")
         client.file(clip["id"], "video", result.video)
