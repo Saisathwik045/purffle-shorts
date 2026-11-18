@@ -8,6 +8,11 @@ on:
         description: Specific authorized queued job to claim
         required: false
         type: string
+      verify_storage:
+        description: Verify private storage after free allowance confirmation (no video processing)
+        required: false
+        type: boolean
+        default: false
       verify_connection:
         description: Check private dashboard access without claiming work
         required: false
@@ -20,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   process:
-    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true' && (inputs.verify_connection == true || vars.PURFFLE_ACTIONS_APP_USE_AUTHORIZED == 'true')
+    if: github.event.repository.private == false && vars.PURFFLE_DASHBOARD_WORKER_ENABLED == 'true' && (inputs.verify_storage == true || inputs.verify_connection == true || vars.PURFFLE_ACTIONS_APP_USE_AUTHORIZED == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -46,6 +51,7 @@ jobs:
           test -n "$PURFFLE_DASHBOARD_WORKER_TOKEN" || { echo 'Configure the worker secret'; exit 1; }
           test -n "$PURFFLE_DASHBOARD_SITE_TOKEN" || { echo 'Configure private Site service access'; exit 1; }
       - name: CPU media tools
+        if: inputs.verify_connection != true && inputs.verify_storage != true
         run: |
           if ! command -v ffmpeg >/dev/null || ! test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf; then
             sudo apt-get update
@@ -56,8 +62,11 @@ jobs:
       - name: Process one authorized queued job (uploads disabled)
         env:
           VERIFY_CONNECTION: ${{ inputs.verify_connection }}
+          VERIFY_STORAGE: ${{ inputs.verify_storage }}
         run: |
-          if [ "$VERIFY_CONNECTION" = 'true' ]; then
+          if [ "$VERIFY_STORAGE" = 'true' ]; then
+            python -m purffle_shorts.dashboard_worker --verify-storage
+          elif [ "$VERIFY_CONNECTION" = 'true' ]; then
             python -m purffle_shorts.dashboard_worker --check-connection
           else
             python -m purffle_shorts.dashboard_worker

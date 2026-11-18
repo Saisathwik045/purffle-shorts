@@ -1,5 +1,6 @@
 import {
   generationStatus,
+  credentialHash,
   requireGeneration,
   reserve,
   charge,
@@ -153,7 +154,7 @@ async function encryptTokens(env, tokens) {
 }
 async function launch(env, db, id, count, attempt = 1, reset = false) {
   try {
-    requireGeneration(env);
+    await requireGeneration(env, db);
     if (reset) await cleanup(env, db, { jobId: id, expectedAttempt: attempt });
     await reserve(db, id, count);
   } catch (error) {
@@ -232,8 +233,74 @@ export async function api(request, env) {
         publishing_enabled: false,
       });
     }
+    if (request.method === "POST" && path === "/api/worker/verify-storage") {
+      await body(request);
+      if (env.FREE_TIER_VERIFIED !== "true")
+        throw new Problem(
+          "Verify account free allowances before any storage probe.",
+          503,
+        );
+      if (!env.BUCKET) throw new Problem("Private storage is not bound.", 503);
+      await charge(db, "verification", 20);
+      // Invalidate old proof first. A failed probe must never leave generation enabled.
+      const checked_at = now();
+      await statement(
+        db,
+        "INSERT INTO worker_heartbeats(id,last_seen) VALUES('cpu',?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen",
+        checked_at,
+      ).run();
+      await statement(
+        db,
+        "UPDATE worker_heartbeats SET storage_verified_at=NULL,credential_hash=NULL,last_check_error=NULL WHERE id='cpu'",
+      ).run();
+      const key = `_verification/${uuid()}.txt`;
+      const value = uuid();
+      let wrote = false;
+      try {
+        await charge(db, "writes", 2000);
+        // Reserve the delete operation before creating the temporary object.
+        await charge(db, "writes", 2000);
+        await charge(db, "reads", 10000);
+        wrote = true; // PUT may succeed even if its acknowledgement is lost.
+        await env.BUCKET.put(key, value);
+        const saved = await env.BUCKET.get(key);
+        if (!saved || (await new Response(saved.body).text()) !== value)
+          throw new Error("Private object read-back mismatch");
+        await env.BUCKET.delete(key);
+        wrote = false;
+        await statement(
+          db,
+          "UPDATE worker_heartbeats SET credential_hash=?,storage_verified_at=?,last_check_error=NULL WHERE id='cpu'",
+          await credentialHash(env),
+          checked_at,
+        ).run();
+        return json({
+          connected: true,
+          storage_verified: true,
+          checked_at,
+          publishing_enabled: false,
+        });
+      } catch {
+        await statement(
+          db,
+          "UPDATE worker_heartbeats SET last_check_error='Private storage roundtrip failed. Check bindings and provider limits.' WHERE id='cpu'",
+        ).run();
+        throw new Problem(
+          "Private storage verification failed. No generation was enabled.",
+          503,
+        );
+      } finally {
+        if (wrote) {
+          try {
+            await env.BUCKET.delete(key);
+          } catch {
+            /* Proof stays invalid; report the probe failure. */
+          }
+        }
+      }
+    }
     if (request.method === "POST" && path === "/api/worker/claim") {
-      requireGeneration(env);
+      await requireGeneration(env, db);
       const claimInput = await body(request);
       await cleanup(env, db);
       await statement(
@@ -326,7 +393,7 @@ export async function api(request, env) {
       /^\/api\/worker\/jobs\/([\w-]+)\/clips\/([\w-]+)\/(video|subtitles)$/,
     );
     if (upload && request.method === "PUT") {
-      requireGeneration(env);
+      await requireGeneration(env, db);
       const j = await lease(db, upload[1], request.headers.get("x-job-lease"));
       if (j.state !== "GENERATING_METADATA")
         throw new Problem(
@@ -557,7 +624,7 @@ export async function api(request, env) {
       preferences: preferences ? JSON.parse(preferences.preferences) : DEFAULTS,
       worker: heartbeat || null,
       publishing_enabled: false,
-      generation: generationStatus(env),
+      generation: await generationStatus(env, db),
       oauth_configured: !!(
         env.GOOGLE_CLIENT_ID &&
         env.GOOGLE_CLIENT_SECRET &&
@@ -585,7 +652,7 @@ export async function api(request, env) {
     if (!["video", "livestream"].includes(input.source_kind))
       throw new Problem("Choose video or livestream.");
     const auth = authorization(input.authorization, owner);
-    if (auth) requireGeneration(env);
+    if (auth) await requireGeneration(env, db);
     const fingerprint = await hash(JSON.stringify([source.url, opts]));
     const existing = await one(
       db,
@@ -674,7 +741,7 @@ export async function api(request, env) {
           "Only a queued job can request another worker wake. Active work is not duplicated.",
           409,
         );
-      requireGeneration(env);
+      await requireGeneration(env, db);
       if (!j.storage_reserved) await reserve(db, j.id, j.options.count);
       await dispatch(env, db, j.id);
       return json({ state: j.state, dispatch_status: "ACCEPTED" });
@@ -725,7 +792,7 @@ export async function api(request, env) {
       return json({ deleted: true });
     }
     if (request.method === "POST" && jobRoute[2] === "authorization") {
-      requireGeneration(env);
+      await requireGeneration(env, db);
       if (j.state !== "AWAITING_SOURCE_AUTHORIZATION")
         throw new Problem(
           "Only jobs awaiting authorization can be authorized.",
@@ -787,7 +854,7 @@ export async function api(request, env) {
         ).run();
         return json({ state: "AWAITING_SOURCE_AUTHORIZATION" });
       }
-      requireGeneration(env);
+      await requireGeneration(env, db);
       // Claim retry atomically before cleanup. Previous attempt files remain private and are not presented as generated clips.
       const retried = await one(
         db,

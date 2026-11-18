@@ -113,3 +113,17 @@ def test_cpu_model_preparation_uses_existing_complete_snapshot_downloader(tmp_pa
     monkeypatch.setitem(sys.modules, "faster_whisper.utils", SimpleNamespace(download_model=lambda *a, **k: str(tmp_path)))
     with pytest.raises(RuntimeError, match="incomplete"):
         whisper_assets.prepare()
+
+
+def test_verify_storage_uses_private_probe_without_claiming(monkeypatch, capsys):
+    import sys
+
+    calls = []
+    client = SimpleNamespace(request=lambda method, path, **kwargs: (
+        calls.append((method, path)) or {"storage_verified": True, "checked_at": "2026-11-18T00:00:00Z"}))
+    monkeypatch.setattr(W, "DashboardClient", lambda: client)
+    monkeypatch.setattr(W.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sys, "argv", ["worker", "--verify-storage"])
+    W.main()
+    assert calls == [("POST", "/api/worker/verify-storage")]
+    assert "proof persisted" in capsys.readouterr().out

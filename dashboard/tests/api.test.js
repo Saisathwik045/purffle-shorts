@@ -1,4 +1,5 @@
 import test from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { D1 } from "./support/d1.js";
 import { api } from "../worker/index.js";
@@ -27,8 +28,19 @@ const input = () => ({
   },
 });
 function context() {
+  const DB = new D1();
+  // Existing tests start with a successful isolated development probe.
+  DB.db
+    .prepare(
+      "INSERT INTO worker_heartbeats(id,last_seen,credential_hash,storage_verified_at) VALUES('cpu',?,?,?)",
+    )
+    .run(
+      new Date().toISOString(),
+      createHash("sha256").update("worker-test-secret").digest("hex"),
+      new Date().toISOString(),
+    );
   return {
-    DB: new D1(),
+    DB,
     WORKER_TOKEN: "worker-test-secret",
     // Isolated development/test harness, not provider authorization for production.
     ACTIONS_APP_USE_AUTHORIZED: "true",
@@ -540,5 +552,108 @@ test("an ambiguous dispatch never reports a regression after a real worker claim
     assert.equal(actual.events.at(-1).state, "VALIDATING");
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test("manual timestamps cannot replace a real private storage probe", async () => {
+  const env = context();
+  env.DB.db.exec("DELETE FROM worker_heartbeats");
+  env.WORKER_CONNECTION_VERIFIED_AT = new Date().toISOString();
+  const status = (await (await call(env, "/api/bootstrap")).json()).generation;
+  assert.equal(status.enabled, false);
+  assert.equal(status.connection.storage_verified, false);
+});
+
+test("storage probe proves write/read/delete and binds proof to current credentials", async () => {
+  const env = context();
+  env.DB.db.exec("DELETE FROM worker_heartbeats");
+  delete env.WORKER_CONNECTION_VERIFIED_AT;
+  const objects = new Map();
+  env.BUCKET = {
+    async put(key, value) {
+      objects.set(key, value);
+    },
+    async get(key) {
+      return { body: objects.get(key) };
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+  };
+  const proof = await (
+    await call(
+      env,
+      "/api/worker/verify-storage",
+      "POST",
+      {},
+      null,
+      workerHeaders,
+    )
+  ).json();
+  assert.equal(proof.storage_verified, true);
+  assert.equal(objects.size, 0);
+  let status = (await (await call(env, "/api/bootstrap")).json()).generation;
+  assert.equal(status.enabled, true);
+  assert.equal(status.connection.storage_verified_at, proof.checked_at);
+  env.WORKER_TOKEN = "rotated-secret";
+  status = (await (await call(env, "/api/bootstrap")).json()).generation;
+  assert.equal(status.enabled, false);
+  assert.equal(status.connection.storage_verified, false);
+  assert(!JSON.stringify(status).includes("rotated-secret"));
+});
+
+test("storage probe requires free usage confirmation before any object operation", async () => {
+  const env = context();
+  env.FREE_TIER_VERIFIED = "false";
+  let operations = 0;
+  env.BUCKET = {
+    async put() {
+      operations++;
+    },
+  };
+  await assert.rejects(
+    call(env, "/api/worker/verify-storage", "POST", {}, null, workerHeaders),
+    (e) => e.status === 503,
+  );
+  assert.equal(operations, 0);
+  await assert.rejects(
+    call(env, "/api/worker/verify-storage", "POST", {}, null, {}),
+    (e) => e.status === 401,
+  );
+});
+
+test("failed read-back invalidates old proof and cleans the temporary object", async () => {
+  const env = context();
+  const deleted = [];
+  env.BUCKET = {
+    async put() {},
+    async get() {
+      return { body: "corrupt" };
+    },
+    async delete(key) {
+      deleted.push(key);
+    },
+  };
+  await assert.rejects(
+    call(env, "/api/worker/verify-storage", "POST", {}, null, workerHeaders),
+    (e) => e.status === 503,
+  );
+  const status = (await (await call(env, "/api/bootstrap")).json()).generation;
+  assert.equal(status.connection.storage_verified, false);
+  assert.match(status.connection.last_check_error, /roundtrip failed/);
+  assert.equal(deleted.length, 1);
+  assert.match(deleted[0], /^_verification\//);
+});
+
+test("future and expired persisted storage proofs fail closed", async () => {
+  const env = context();
+  for (const delta of [86400000, -31 * 86400000]) {
+    env.DB.db
+      .prepare("UPDATE worker_heartbeats SET storage_verified_at=?")
+      .run(new Date(Date.now() + delta).toISOString());
+    assert.equal(
+      (await (await call(env, "/api/bootstrap")).json()).generation.enabled,
+      false,
+    );
   }
 });

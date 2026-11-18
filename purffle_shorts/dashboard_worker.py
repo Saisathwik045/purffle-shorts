@@ -138,10 +138,17 @@ def process(client: DashboardClient, job: dict, root: Path, *, synthetic_fixture
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-connection", action="store_true")
+    parser.add_argument("--verify-storage", action="store_true", help="Verify private PUT/GET/delete only after account free-tier confirmation")
     args = parser.parse_args()
     if platform.system() != "Linux":
         raise RuntimeError("Dashboard processing requires a remote Linux cloud runner")
     client = DashboardClient()
+    if args.verify_storage:
+        result = client.request("POST", "/api/worker/verify-storage", json={})
+        if not result.get("storage_verified"):
+            raise RuntimeError("Private storage roundtrip did not verify")
+        print(f"Private storage roundtrip verified at {result['checked_at']}; proof persisted by the dashboard; no job claimed or video processed")
+        return
     if args.check_connection:
         result = client.request("POST", "/api/worker/health", json={})
         if not result.get("connected") or not result.get("storage_bound"):

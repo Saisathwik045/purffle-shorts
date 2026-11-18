@@ -99,6 +99,9 @@ export const oauthStates = sqliteTable("oauth_states", {
 export const workerHeartbeats = sqliteTable("worker_heartbeats", {
   id: text().primaryKey(),
   last_seen: text().notNull(),
+  credential_hash: text(),
+  storage_verified_at: text(),
+  last_check_error: text(),
 });
 
 export const operationBudgets = sqliteTable(

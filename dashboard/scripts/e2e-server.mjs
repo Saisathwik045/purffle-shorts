@@ -51,11 +51,24 @@ const env = {
   BUCKET: bucket,
   WORKER_TOKEN: "synthetic-test-worker",
   // Isolated development/test harness, not provider authorization for production.
-    ACTIONS_APP_USE_AUTHORIZED: "true",
-    FREE_TIER_VERIFIED: "true",
+  ACTIONS_APP_USE_AUTHORIZED: "true",
+  FREE_TIER_VERIFIED: "true",
   GITHUB_DISPATCH_TOKEN: "isolated-test-token",
-  WORKER_CONNECTION_VERIFIED_AT: new Date().toISOString(),
 };
+// Exercise the real probe and proof persistence before the synthetic job is submitted.
+const probe = await worker.fetch(
+  new Request("https://isolated.test/api/worker/verify-storage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.WORKER_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  }),
+  env,
+);
+if (!probe.ok || !(await probe.json()).storage_verified)
+  throw new Error("Isolated cloud storage verification failed");
 // Only the GitHub dispatch boundary is stubbed: the actual cloud worker is this CI job.
 // No production credentials, Site, YouTube content, transcript, renderer or media are mocked.
 globalThis.fetch = async (url) => {

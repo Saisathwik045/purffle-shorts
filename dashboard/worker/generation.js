@@ -4,15 +4,18 @@ export const MAX_SUBTITLE_BYTES = 1024 * 1024;
 export const STORAGE_BUDGET = 512 * 1024 * 1024;
 export const RETENTION_DAYS = 7;
 const REPO = "Saisathwik045/purffle-shorts";
-export function generationStatus(env) {
+export async function credentialHash(env) {
+  const bytes = new TextEncoder().encode(env.WORKER_TOKEN || "");
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), (x) =>
+    x.toString(16).padStart(2, "0"),
+  ).join("");
+}
+export async function generationStatus(env, db) {
   const blockers = [];
   if (env.ACTIONS_APP_USE_AUTHORIZED !== "true")
     blockers.push(
       "GitHub provider authorization for application-backend processing has not been verified. Free runner pricing alone does not authorize this use.",
-    );
-  if (env.ACTIONS_APP_USE_AUTHORIZED !== "true")
-    blockers.push(
-      "Production Actions processing requires documented GitHub authorization for this application-backend use. CI tests remain available.",
     );
   if (env.FREE_TIER_VERIFIED !== "true")
     blockers.push(
@@ -22,24 +25,41 @@ export function generationStatus(env) {
     blockers.push(
       "Configure a repository-scoped GitHub token with Actions write permission in the private Site runtime.",
     );
-  if (
-    !env.WORKER_CONNECTION_VERIFIED_AT ||
-    !Number.isFinite(Date.parse(env.WORKER_CONNECTION_VERIFIED_AT)) ||
-    Date.now() - Date.parse(env.WORKER_CONNECTION_VERIFIED_AT) > 30 * 86400000
-  )
+  const proof = db
+    ? await db
+        .prepare(
+          "SELECT last_seen,credential_hash,storage_verified_at,last_check_error FROM worker_heartbeats WHERE id=?",
+        )
+        .bind("cpu")
+        .first()
+    : null;
+  const checked = Date.parse(proof?.storage_verified_at || "");
+  const storage_verified =
+    !!env.WORKER_TOKEN &&
+    proof?.credential_hash === (await credentialHash(env)) &&
+    Number.isFinite(checked) &&
+    checked <= Date.now() &&
+    Date.now() - checked <= 30 * 86400000;
+  if (!storage_verified)
     blockers.push(
-      "Verify the private GitHub worker connection and refresh its 30-day verification timestamp.",
+      "Run the private worker storage verification after confirming free account allowances. A manually supplied timestamp does not verify connectivity or storage.",
     );
   return {
     enabled: !blockers.length,
     blockers,
+    connection: {
+      last_seen: proof?.last_seen || null,
+      storage_verified,
+      storage_verified_at: storage_verified ? proof.storage_verified_at : null,
+      last_check_error: proof?.last_check_error || null,
+    },
     storage_budget_bytes: STORAGE_BUDGET,
     max_video_bytes: MAX_VIDEO_BYTES,
     retention_days: RETENTION_DAYS,
   };
 }
-export function requireGeneration(env) {
-  const status = generationStatus(env);
+export async function requireGeneration(env, db) {
+  const status = await generationStatus(env, db);
   if (!status.enabled) throw new Problem(status.blockers.join(" "), 503);
 }
 export async function reserve(db, jobId, count) {
@@ -71,7 +91,7 @@ export async function charge(db, kind, limit) {
     );
 }
 export async function dispatch(env, db, jobId) {
-  requireGeneration(env);
+  await requireGeneration(env, db);
   await charge(db, "dispatch", 200);
   const headers = {
     Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,

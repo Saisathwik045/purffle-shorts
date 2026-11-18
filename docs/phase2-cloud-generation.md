@@ -40,17 +40,22 @@ completed through the available access:
 4. Configure a repository-scoped token or GitHub App installation token with
    **Actions: write** and repository metadata access as the Site runtime secret
    `GITHUB_DISPATCH_TOKEN`. No code-writing or YouTube permission is needed.
-5. Manually run the worker workflow with `verify_connection=true`. This checks both private access layers and the database/storage binding without claiming a job, downloading a model or touching media. Set
-   `WORKER_CONNECTION_VERIFIED_AT` in the Site runtime to the verification's UTC
-   ISO timestamp; this check expires after 30 days.
-6. Check actual provider plan and account-wide usage, including other Sites/apps,
-   free storage baseline, R2 Standard storage and spending controls. Only if a
-   dedicated free allowance covers this app and overage cannot cause charges,
-   set `FREE_TIER_VERIFIED=true` in Site runtime and deploy that environment revision.
-   Leave it unset if the provider account cannot guarantee a no-charge allowance.
+5. Manually run the worker workflow with `verify_connection=true`. This checks
+   private access and database/binding presence without object operations.
+6. Check actual provider plan/account-wide usage, R2 Standard storage and hard
+   spending controls. Only when the app has a guaranteed no-charge allowance,
+   set Site `FREE_TIER_VERIFIED=true`. Leave it unset otherwise.
+7. Run the worker workflow with `verify_storage=true`. This private check performs
+   one tiny PUT/GET/delete and persists its real proof in D1. No job is claimed.
+   It can run independently of production Actions application-backend permission
+   because it only tests this repository's integration.
+8. Confirm Settings shows a verified storage connection. Proof expires after
+   30 days and on worker-token rotation. `WORKER_CONNECTION_VERIFIED_AT` is now
+   ignored: manually entered timestamps cannot enable processing. Generation
+   remains blocked until provider permission and all other prerequisites hold.
 
-Use the exact `checked_at` UTC timestamp reported by that real connection test; do not invent one. Connection verification is separate from the provider billing attestation. The UI displays setup blockers while configuration is
-missing. Unauthorized jobs can still be saved outside the processing queue.
+Unauthorized jobs can still be saved outside the processing queue. A heartbeat
+or a configured binding is not evidence of a successful storage roundtrip.
 
 No Google OAuth credentials are required to **generate** clips. YouTube uploads
 remain disabled in the UI, API and worker, even after clip approval.
