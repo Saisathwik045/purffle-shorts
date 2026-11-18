@@ -56,3 +56,26 @@ jobs:
           pip install build twine
           python -m build
           twine check --strict dist/*
+
+  cloud-inference:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: CPU media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Reproduce cloud dependencies
+        run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - name: Real CPU inference and captioned render (no uploads)
+        run: python cloud/smoke.py

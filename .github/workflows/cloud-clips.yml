@@ -1,0 +1,93 @@
+name: Free cloud clips
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - cloud/sources.json
+      - .github/workflows/cloud-clips.yml
+      - purffle_shorts/cloud.py
+  pull_request:
+    paths:
+      - cloud/**
+      - purffle_shorts/cloud.py
+      - .github/workflows/cloud-clips.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: free-cloud-clips-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - run: python -m purffle_shorts.cloud --validate-only
+
+  render:
+    needs: validate
+    # Standard Linux runners are free for public repositories. Private repos fail closed.
+    # No secrets or upload flags are passed. Enable only after reviewing the queue and Actions billing.
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.event.repository.private == false &&
+      vars.PURFFLE_CLOUD_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: CPU media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Install CPU transcription
+        run: pip install -r cloud/requirements.lock && pip install --no-deps -e .
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: whisper-base-cpu-v1
+      - uses: actions/cache/restore@v4
+        with:
+          path: cloud-output/completed.json
+          key: cloud-completed-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: cloud-completed-${{ github.ref_name }}-
+      - name: Render with burned subtitles and SRT (uploads disabled)
+        run: python -m purffle_shorts.cloud
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cloud-output/completed.json
+          key: cloud-completed-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save review artifacts for one day
+        if: always() && vars.PURFFLE_ARTIFACTS_ENABLED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cloud-output/videos/**/short.mp4
+            cloud-output/videos/**/captions.srt
+            cloud-output/videos/**/metadata.json
+            cloud-output/completed.json
+          if-no-files-found: ignore
+          retention-days: 1

@@ -132,6 +132,7 @@ class Settings:
     tts_instructions: str = "Energetic, curious storyteller voice for a YouTube Short. Natural pacing."
     align: str = "auto"               # auto|none|faster-whisper|openai — word timing for engines without it
     voice_cache: bool = True          # reuse lines already spoken in the same voice (fast re-renders)
+    whisper_device: str = "auto"      # cloud runner forces cpu; legacy workflows auto-detect
     whisper_model: str = "auto"       # faster-whisper model: auto (large-v3-turbo on a GPU, small on CPU), base...
 
     # --- visuals --------------------------------------------------------------------------
@@ -179,7 +180,7 @@ class Settings:
     sfx_volume: float = 1.0           # 1.0 = 11 dB under the voice; 0.5 is quieter, 2.0 louder
 
     # --- YouTube --------------------------------------------------------------------------
-    upload: bool = True
+    upload: bool = False
     privacy: str = "public"           # public|unlisted|private
     publish_times: list[str] = field(default_factory=list)  # e.g. 09:00,14:00,19:00 -> scheduled
     timezone: str = ""

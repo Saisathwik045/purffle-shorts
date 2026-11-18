@@ -47,3 +47,6 @@ desktop.ini
 *.txt
 !requirements.txt
 !purffle_shorts/web/fonts/OFL.txt
+
+# Cloud render state and upload intents
+cloud-output/

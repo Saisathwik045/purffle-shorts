@@ -122,11 +122,12 @@ def transcribe(video: Path, work: Path, settings: Settings) -> list[Word]:
     lang = settings.language.split("-")[0]
     try:
         model = tts.whisper_model(settings)
-        words = tts._align_faster_whisper(audio, lang, model, vad=True)
+        words = tts._align_faster_whisper(audio, lang, model, vad=True, device=settings.whisper_device)
         log.info("Transcribed %d words with faster-whisper (%s)", len(words), model)
         return words
-    except ImportError:
-        pass
+    except ImportError as e:
+        if settings.align == "faster-whisper":
+            raise PermanentError("CPU transcription requires faster-whisper; paid fallback is disabled") from e
     if settings.openai_api_key:
         if audio.stat().st_size > 24 * 1024 * 1024:
             raise PermanentError("That video is too long for OpenAI transcription (25 MB audio limit, about "
