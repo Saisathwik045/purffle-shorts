@@ -9,10 +9,14 @@ on:
       - cloud/prepare_whisper.py
       - .github/workflows/dashboard-*.yml
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
     paths:
       - dashboard/**
       - purffle_shorts/dashboard_worker.py
+      - .github/workflows/dashboard-ci.yml
+concurrency:
+  group: dashboard-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
