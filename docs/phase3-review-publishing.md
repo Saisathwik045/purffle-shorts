@@ -30,3 +30,12 @@ The engine has no default HTTP client, no public execution route and no producti
 Run Node API/database tests and the synthetic Chromium review flow in remote software CI. OAuth and upload requests are mocked; no real Google account or upload is exercised. The browser fixture uses isolated SQLite/storage and loopback only. Existing CPU Whisper/FFmpeg CI remains an isolated synthetic regression test, not an application backend.
 
 Deployment and production storage/OAuth are not established by these tests. No active production processing worker is supplied by Phase 3. Production clips remain zero until verified separately.
+
+## Current verification blocker (2026-11-19)
+GitHub's public Actions page reports that workflows on this fork are not currently running due to the scale of GitHub Actions usage. Do not re-enable, bypass or shift production processing onto Actions. No further run triggers are attempted after identifying that restriction.
+
+The last executed Phase 3 dashboard test run passed 46 Node tests, syntax and build checks. Synthetic CPU Whisper/FFmpeg regression passed with a 720×1280, 10.57-second clip and 13 subtitle cues in an isolated API store. General CI passed its Python 3.10–3.13 matrix, package, Docker and cloud-inference checks at commit 9f8badb0602624c6ee1fd1b6e0a02b7d824b1c4d. Official Chrome successfully fetched and played H.264 video, then exposed an exact accessible-name issue in the description field.
+
+The description-label fix, atomic intent preparation guard, cancellation recovery and contextual commentary changes are pushed but have not executed in CI. The two added intent tests bring the intended Node total to 48; do not describe all 48 as passed. The full browser approval flow has not completed successfully. The original Codex Cloud task-creation request timed out without an ID; a subsequent authorized retry remains unconfirmed. No local fallback on the user's Mac is permitted.
+
+Phase 3 is an unmerged draft implementation, not a verified production rollout. The existing deployment is preserved. Before rollout, an available authorized cloud test environment must verify the final commit; then apply the migration and configure official Google OAuth securely. Production worker availability and production storage/preview checks remain unresolved, and live uploads require separate explicit authorization.

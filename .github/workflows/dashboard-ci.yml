@@ -9,7 +9,7 @@ on:
       - cloud/prepare_whisper.py
       - .github/workflows/dashboard-*.yml
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
     paths:
       - dashboard/**
       - purffle_shorts/dashboard_worker.py
