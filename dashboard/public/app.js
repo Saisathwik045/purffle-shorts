@@ -329,10 +329,10 @@ ${j.state === "FAILED" && j.retryable ? `<button class="btn section-space" data-
 }
 function metadataEditor(c) {
   return `<details class="section-space"><summary>Review title, description and hashtags</summary><form id="clip-metadata-${esc(c.id)}" data-metadata-clip="${esc(c.id)}" data-metadata-hash="${esc(c.metadata_hash || "")}">
-  <label class="field">Title<input name="title" required maxlength="100" value="${esc(c.title)}"></label>
-  <label class="field">Description<textarea name="description" maxlength="5000" rows="4">${esc(c.description)}</textarea></label>
+  <label class="field">Title<input name="title" aria-label="Title" required maxlength="100" value="${esc(c.title)}"></label>
+  <label class="field">Description<textarea name="description" aria-label="Description" maxlength="5000" rows="4">${esc(c.description)}</textarea></label>
   <label class="field">Hashtags<input name="hashtags" aria-label="Hashtags" value="${esc((c.hashtags || []).join(" "))}" placeholder="#Shorts #Topic"><small>Up to 15 hashtags, separated by spaces.</small></label>
-  <label class="field">Opening hook<input name="opening_hook" maxlength="120" value="${esc(c.opening_hook || "")}"></label>
+  <label class="field">Opening hook<input name="opening_hook" aria-label="Opening hook" maxlength="120" value="${esc(c.opening_hook || "")}"></label>
   <p><strong>Source attribution</strong><br>${esc(c.source_attribution || "Review source rights before publishing.")}</p>
   <p><strong>Original commentary suggestions</strong></p><ul>${(c.commentary_suggestions || []).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
   <small>Suggestions have not been added to the video. Saving edits clears prior approval.</small><div class="error" role="alert"></div><button class="btn small" type="submit">Save metadata</button></form>
