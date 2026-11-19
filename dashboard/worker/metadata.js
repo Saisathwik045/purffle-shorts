@@ -25,16 +25,17 @@ export function generateMetadata({ transcript = "", sourceTitle = "", attributio
   for (const word of words) if (!stop.has(word) && [...word].length <= 40) frequencies.set(word, (frequencies.get(word) || 0) + 1);
   const keywords = [...frequencies].sort((a,b) => b[1]-a[1] || (a[0]<b[0]?-1:1)).slice(0,4).map(([word])=>word);
   const tags = hashtags(["Shorts", ...keywords]);
-  const source_attribution = String(attribution || "").trim().slice(0,1200);
+  const source_attribution = clean(attribution,1200);
+  const topic = keywords.slice(0,3).join(", ") || clean(fallback,80);
   const summary = excerpt ? clean(excerpt, 800) : "An excerpt from " + fallback + ". Review the recording before publishing.";
   return {
     title, description: (summary + (source_attribution ? "\n\nSource attribution: " + source_attribution : "")).slice(0,5000),
     hashtags: tags, opening_hook: clean((sentence || fallback).split(/\s+/).slice(0,6).join(" "),120),
     source_attribution,
     commentary_suggestions: [
-      "After watching, explain why this point matters in your own words.",
-      "Add a concrete example or a counterpoint to the excerpt.",
-      "Ask viewers what evidence would support or challenge this point."
+      "A useful question is how this point about " + topic + " holds up in a real example.",
+      "Before accepting this idea about " + topic + ", I would compare it with a counterexample.",
+      "What evidence would change your view on " + topic + "?"
     ],
     transcript_excerpt: excerpt,
     metadata_method: excerpt ? "deterministic-extractive-v1" : "source-title-fallback-v1",

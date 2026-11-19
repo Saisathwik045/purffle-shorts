@@ -51,17 +51,22 @@ export async function prepareIntent(env,db,clip,authorization,account) {
   const ready=await uploadReadiness(env,db,clip,authorization,account);
   if(!ready.preparation_ready) throw new Problem(ready.blockers.join(" "),409);
   const fingerprint=await contentHash(clip),c=clipFields(clip),timestamp=now(),id=crypto.randomUUID();
+  const guard="EXISTS(SELECT 1 FROM clips live JOIN jobs j ON j.id=live.job_id JOIN youtube_accounts a ON a.owner=live.owner WHERE live.id=? AND live.owner=? AND live.review_status='APPROVED' AND live.approval_hash=? AND live.metadata_version=? AND live.media_revision=? AND j.attempt=live.attempt AND j.authorization=? AND a.connection_id=? AND a.status='CONNECTED')";
+  const guardArgs=[c.id,c.owner,fingerprint,c.metadata_version,c.media_revision,clip.source_authorization,account.connection_id];
   const metadata={title:c.title,description:c.description,hashtags:c.hashtags,
     source_attribution:c.source_attribution,opening_hook:c.opening_hook,privacyStatus:"private"};
-  await run(db,"INSERT INTO upload_intents(id,owner,clip_id,job_id,channel_id,connection_id,metadata_hash,media_revision,content_sha256,metadata,total_bytes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,clip_id,channel_id,media_revision) DO NOTHING",
-    id,c.owner,c.id,c.job_id,account.channel_id,account.connection_id,fingerprint,c.media_revision,c.content_sha256,JSON.stringify(metadata),ready.total_bytes,timestamp,timestamp);
+  await run(db,"INSERT INTO upload_intents(id,owner,clip_id,job_id,channel_id,connection_id,metadata_hash,media_revision,content_sha256,metadata,total_bytes,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE "+guard+" ON CONFLICT(owner,clip_id,channel_id,media_revision) DO NOTHING",
+    id,c.owner,c.id,c.job_id,account.channel_id,account.connection_id,fingerprint,c.media_revision,c.content_sha256,JSON.stringify(metadata),ready.total_bytes,timestamp,timestamp,...guardArgs);
   let intent=await one(db,"SELECT * FROM upload_intents WHERE owner=? AND clip_id=? AND channel_id=? AND media_revision=?",c.owner,c.id,account.channel_id,c.media_revision);
-  if(intent.state==="INVALIDATED"&&!intent.session_blob&&intent.acknowledged_bytes===0) {
-    await run(db,"UPDATE upload_intents SET metadata_hash=?,metadata=?,connection_id=?,state='PREPARED',invalidated_at=NULL,error=NULL,total_bytes=?,updated_at=? WHERE id=? AND state='INVALIDATED' AND session_blob IS NULL AND acknowledged_bytes=0",fingerprint,JSON.stringify(metadata),account.connection_id,ready.total_bytes,now(),intent.id);
+  if(!intent||!await one(db,"SELECT 1 AS current WHERE "+guard,...guardArgs))throw new Problem("Clip approval or account changed while checking storage. Refresh before preparing.",409);
+  let refreshed=false;
+  if(["INVALIDATED","CANCELLED"].includes(intent.state)&&!intent.session_blob&&intent.acknowledged_bytes===0) {
+    const reset=await one(db,"UPDATE upload_intents SET metadata_hash=?,metadata=?,connection_id=?,state='PREPARED',invalidated_at=NULL,error=NULL,total_bytes=?,updated_at=? WHERE id=? AND state IN ('INVALIDATED','CANCELLED') AND session_blob IS NULL AND acknowledged_bytes=0 AND "+guard+" RETURNING id",fingerprint,JSON.stringify(metadata),account.connection_id,ready.total_bytes,now(),intent.id,...guardArgs);
+    refreshed=!!reset;
     intent=await one(db,"SELECT * FROM upload_intents WHERE id=?",intent.id);
   }
   if(intent.metadata_hash!==fingerprint||intent.connection_id!==account.connection_id)
     throw new Problem("An earlier intent must be reconciled before this clip can be prepared again.",409);
-  if(intent.id===id) await run(db,"INSERT INTO upload_events(id,intent_id,owner,state,message,created_at) VALUES(?,?,?,'PREPARED','Owner prepared an approved clip. No upload was authorized or started.',?)",crypto.randomUUID(),id,c.owner,timestamp);
+  if(intent.id===id||refreshed) await run(db,"INSERT INTO upload_events(id,intent_id,owner,state,message,created_at) VALUES(?,?,?,'PREPARED','Owner prepared an approved clip. No upload was authorized or started.',?)",crypto.randomUUID(),intent.id,c.owner,timestamp);
   return publicIntent(intent);
 }

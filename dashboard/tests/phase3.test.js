@@ -162,3 +162,20 @@ test("expired OAuth state is rejected before exchanging any code",async()=>{
  await assert.rejects(finishOAuth(x.env,x.DB,"owner",new URL("https://purffle.test/api/youtube/callback?state="+state+"&code=expired"),async()=>{sent=true;}),e=>e.status===403);
  assert.equal(sent,false);
 });
+
+test("preparation rejects approval changed during storage verification",async()=>{
+ const x=await fixture();await x.approve();const expected=await metadataHash(x.row()),head=x.env.BUCKET.head;let changed=false;
+ x.env.BUCKET.head=async key=>{
+  if(!changed){changed=true;await x.call("/api/clips/clip/metadata","POST",{title:"Concurrent edit",description:"Changed during storage check",expected_hash:expected});}
+  return head(key);
+ };
+ await assert.rejects(x.call("/api/clips/clip/upload-intent","POST",{expected_hash:expected}),e=>e.status===409);
+ assert.equal(x.DB.db.prepare("SELECT COUNT(*) n FROM upload_intents").get().n,0);
+});
+test("an explicitly prepared cancelled intent can be safely reused before initiation",async()=>{
+ const x=await fixture(),intent=await x.prepare();
+ await x.call("/api/upload-intents/"+intent.id+"/cancel","POST",{});
+ const again=await(await x.call("/api/clips/clip/upload-intent","POST",{expected_hash:await metadataHash(x.row())})).json();
+ assert.equal(again.intent.id,intent.id);assert.equal(again.intent.state,"PREPARED");
+ assert.equal(x.DB.db.prepare("SELECT COUNT(*) n FROM upload_events WHERE state='PREPARED'").get().n,2);
+});
