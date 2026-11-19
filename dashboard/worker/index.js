@@ -1,4 +1,8 @@
-import { metadataHash, reviewedMetadata, expectedMetadata, publishingPreparation } from "./review.js";
+import { metadataHash, approvalValid, publishingPreparation } from "./review.js";
+import { generateMetadata, clipFields } from "./metadata.js";
+import { clipReviewRoute, appendReviewHistory } from "./review-store.js";
+import { publicIntent, invalidateIntents } from "./publishing.js";
+import { startOAuth, finishOAuth, disconnectOAuth, oauthConfigured, YOUTUBE_SCOPES } from "./oauth.js";
 import { serveMedia } from "./media.js";
 import {
   generationStatus,
@@ -120,39 +124,6 @@ async function metadata(url) {
   } catch {
     return null;
   }
-}
-async function secretKey(env) {
-  if (!env.TOKEN_ENCRYPTION_KEY)
-    throw new Problem(
-      "YouTube connection needs an encryption key configured by the cloud administrator.",
-      503,
-    );
-  let bytes;
-  try {
-    bytes = Uint8Array.from(atob(env.TOKEN_ENCRYPTION_KEY), (c) =>
-      c.charCodeAt(0),
-    );
-  } catch {
-    throw new Problem(
-      "YouTube token encryption is not configured correctly.",
-      503,
-    );
-  }
-  if (bytes.length !== 32)
-    throw new Problem("YouTube token encryption requires a 32-byte key.", 503);
-  return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, [
-    "encrypt",
-    "decrypt",
-  ]);
-}
-async function encryptTokens(env, tokens) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    await secretKey(env),
-    new TextEncoder().encode(JSON.stringify(tokens)),
-  );
-  return JSON.stringify({ iv: [...iv], data: [...new Uint8Array(encrypted)] });
 }
 async function launch(env, db, id, count, attempt = 1, reset = false) {
   try {
@@ -426,10 +397,11 @@ export async function api(request, env) {
         throw new Problem("Clip storage was not reserved.", 409);
       await charge(db, "r2-write", 2000);
       const key = `${j.id}/${c.id}/${video ? "short.mp4" : "captions.srt"}`;
-      await env.BUCKET.put(key, request.body, {
-        httpMetadata: {
-          contentType: video ? "video/mp4" : "application/x-subrip",
-        },
+      const digest=request.headers.get("x-content-sha256");
+      if(digest&&!/^[a-f0-9]{64}$/.test(digest))throw new Problem("Invalid media fingerprint.");
+      const savedObject=await env.BUCKET.put(key,request.body,{
+        httpMetadata:{contentType:video?"video/mp4":"application/x-subrip"},
+        ...(video&&digest?{customMetadata:{sha256:digest}}:{})
       });
       try {
         await lease(db, j.id, request.headers.get("x-job-lease"));
@@ -443,6 +415,11 @@ export async function api(request, env) {
         key,
         c.id,
       ).run();
+      await db.prepare("UPDATE clips SET media_revision=media_revision+1,review_status='PENDING',reviewed_at=NULL,approval_hash=NULL"+
+        (video?",content_sha256=?,media_etag=?":"")+" WHERE id=?")
+        .bind(...(video?[digest||null,savedObject?.etag||savedObject?.httpEtag||null,c.id]:[c.id])).run();
+      await invalidateIntents(db,c.id,"Media content changed; a new approval is required.");
+      await appendReviewHistory(db,await one(db,"SELECT * FROM clips WHERE id=?",c.id),"MEDIA_CHANGED");
       return json({ saved: true });
     }
     if (match && request.method === "POST") {
@@ -534,23 +511,15 @@ export async function api(request, env) {
           input.position,
         );
         if (previous) return json({ id: previous.id });
-        const id = uuid();
-        await statement(
-          db,
-          "INSERT INTO clips(id,job_id,owner,attempt,position,title,description,duration,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-          id,
-          j.id,
-          j.owner,
-          j.attempt,
-          input.position,
-          input.title.slice(0, 100),
-          String(input.description || "").slice(0, 3500) +
-            "\n\n" +
-            j.authorization.attribution,
-          input.duration,
-          now(),
-        ).run();
-        return json({ id }, 201);
+        const id=uuid();
+        const generated=generateMetadata({transcript:input.transcript_excerpt||"",sourceTitle:input.title||j.title,attribution:j.authorization.attribution,position:input.position});
+        await statement(db,
+          "INSERT INTO clips(id,job_id,owner,attempt,position,title,description,duration,created_at,hashtags,opening_hook,source_attribution,commentary_suggestions,transcript_excerpt,metadata_method) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          id,j.id,j.owner,j.attempt,input.position,generated.title,generated.description,input.duration,now(),
+          JSON.stringify(generated.hashtags),generated.opening_hook,generated.source_attribution,JSON.stringify(generated.commentary_suggestions),
+          generated.transcript_excerpt,generated.metadata_method).run();
+        await appendReviewHistory(db,await one(db,"SELECT * FROM clips WHERE id=?",id),"GENERATED");
+        return json({id,metadata:generated},201);
       }
       const clips = await all(
         db,
@@ -607,7 +576,7 @@ export async function api(request, env) {
     );
     const account = await one(
       db,
-      "SELECT channel_id,channel_title,connected_at FROM youtube_accounts WHERE owner=?",
+      "SELECT channel_id,channel_title,connected_at,connection_id,status,scopes FROM youtube_accounts WHERE owner=?",
       owner,
     );
     const preferences = await one(
@@ -622,24 +591,48 @@ export async function api(request, env) {
     );
     return json({
       jobs,
-      clips: await Promise.all(clips.map(async (clip) => ({ ...clip, metadata_hash: await metadataHash(clip) }))),
+      clips: await Promise.all(clips.map(async (clip) => {
+        const view=clipFields(clip);
+        for(const key of ["video_key","subtitle_key","media_etag","approval_hash","transcript_excerpt","mutation_id"]) delete view[key];
+        return {...view,metadata_hash:await metadataHash(clip),approval_valid:await approvalValid(clip)};
+      })),
+      upload_intents: (await all(db,"SELECT * FROM upload_intents WHERE owner=? ORDER BY updated_at DESC LIMIT 200",owner)).map(publicIntent),
       publications,
       account,
       preferences: preferences ? JSON.parse(preferences.preferences) : DEFAULTS,
       worker: heartbeat || null,
       publishing_enabled: false,
       generation: await generationStatus(env, db),
-      oauth_configured: !!(
-        env.GOOGLE_CLIENT_ID &&
-        env.GOOGLE_CLIENT_SECRET &&
-        env.TOKEN_ENCRYPTION_KEY
-      ),
+      oauth_configured: oauthConfigured(env),
       user: {
         name:
           request.headers.get("oai-authenticated-user-email") ||
           "Workspace owner",
       },
     });
+  }
+  const intentRoute=path.match(/^\/api\/upload-intents\/([\w-]+)(?:\/(cancel|history))?$/);
+  if(intentRoute) {
+    const intent=await one(db,"SELECT * FROM upload_intents WHERE id=? AND owner=?",intentRoute[1],owner);
+    if(!intent)throw new Problem("Upload intent not found.",404);
+    if(request.method==="GET"&&intentRoute[2]==="history")
+      return json({events:await all(db,"SELECT state,message,created_at FROM upload_events WHERE intent_id=? AND owner=? ORDER BY created_at,rowid",intent.id,owner)});
+    if(request.method==="GET"&&!intentRoute[2])return json({intent:publicIntent(intent),publishing_enabled:false});
+    if(request.method==="POST"&&intentRoute[2]==="cancel") {
+      await body(request);
+      if(!["PREPARED","INVALIDATED","CANCELLED"].includes(intent.state)||intent.session_blob)
+        throw new Problem("An initiated or ambiguous upload requires reconciliation; it cannot be discarded.",409);
+      await statement(db,"UPDATE upload_intents SET state='CANCELLED',updated_at=? WHERE id=? AND owner=? AND state IN ('PREPARED','INVALIDATED','CANCELLED') AND session_blob IS NULL",now(),intent.id,owner).run();
+      return json({cancelled:true,publishing_enabled:false});
+    }
+    throw new Problem("Live upload execution is disabled.",403);
+  }
+  if(path==="/api/youtube/readiness"&&request.method==="GET") {
+    const account=await one(db,"SELECT channel_id,status,connection_id,scopes FROM youtube_accounts WHERE owner=?",owner);
+    let scopes=[];try{scopes=JSON.parse(account?.scopes||"[]");}catch{}
+    return json({oauth_configured:oauthConfigured(env),channel_connected:!!account?.connection_id&&account.status==="CONNECTED",
+      scopes_ready:YOUTUBE_SCOPES.every(s=>scopes.includes(s)),publishing_enabled:false,execution_authorized:false,
+      blockers:["Uploads require separate explicit authorization and remain disabled.",...(!oauthConfigured(env)?["Configure Google OAuth in secure server settings."]:[])]});
   }
   if (path === "/api/metadata" && request.method === "GET") {
     const source = youtubeURL(url.searchParams.get("url"));
@@ -886,7 +879,7 @@ export async function api(request, env) {
     }
   }
   const clipRoute = path.match(
-    /^\/api\/clips\/([\w-]+)\/(review|metadata|preparation|video|subtitles|publish)$/,
+    /^\/api\/clips\/([\w-]+)\/(review|metadata|regenerate|history|readiness|upload-intent|preparation|video|subtitles|publish)$/,
   );
   if (clipRoute) {
     const c = await one(
@@ -908,71 +901,14 @@ export async function api(request, env) {
         "Publishing remains disabled. Connection and review do not authorize uploads.",
         403,
       );
-    if (clipRoute[2] === "metadata" && request.method === "POST") {
-      if (!["READY_FOR_REVIEW", "APPROVED"].includes(c.job_state))
-        throw new Problem("This clip cannot be edited in its current state.", 409);
-      const input = await body(request);
-      await expectedMetadata(input, c);
-      const edited = reviewedMetadata(input);
-      if (edited.title === c.title && edited.description === c.description)
-        return json({ saved: false, unchanged: true, metadata_hash: await metadataHash(c) });
-      const changed = await one(db,
-        "UPDATE clips SET title=?,description=?,review_status='PENDING',reviewed_at=NULL WHERE id=? AND owner=? AND attempt=? AND title=? AND description=? AND review_status=? AND reviewed_at IS ? AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=clips.job_id AND j.attempt=clips.attempt AND j.state IN ('READY_FOR_REVIEW','APPROVED')) RETURNING id",
-        edited.title, edited.description, c.id, owner, c.attempt, c.title, c.description, c.review_status, c.reviewed_at || null);
-      if (!changed) throw new Problem("This clip changed. Refresh before editing again.", 409);
-      await db.batch([
-        statement(db, "UPDATE jobs SET state='READY_FOR_REVIEW',updated_at=? WHERE id=? AND attempt=? AND state IN ('READY_FOR_REVIEW','APPROVED')", now(), c.job_id, c.attempt),
-        event(db, c.job_id, "READY_FOR_REVIEW", "Owner edited clip metadata. Previous approval was cleared; uploads remain disabled.", c.attempt),
-      ]);
-      return json({ saved: true, review_status: "PENDING", publishing_enabled: false });
+    if(clipRoute[2]==="preparation"&&request.method==="POST") {
+      const input=await body(request);
+      const {expectedMetadata}=await import("./review.js");await expectedMetadata(input,c);
+      const channel=await one(db,"SELECT channel_id FROM youtube_accounts WHERE owner=?",owner);
+      return json(await publishingPreparation(c,c.source_authorization?JSON.parse(c.source_authorization):null,channel));
     }
-    if (clipRoute[2] === "preparation" && request.method === "POST") {
-      const input = await body(request);
-      await expectedMetadata(input, c);
-      const channel = await one(db, "SELECT channel_id FROM youtube_accounts WHERE owner=?", owner);
-      return json(await publishingPreparation(c, c.source_authorization ? JSON.parse(c.source_authorization) : null, channel));
-    }
-    if (clipRoute[2] === "review" && request.method === "POST") {
-      const input = await body(request);
-      await expectedMetadata(input, c);
-      if (
-        !["APPROVED", "REJECTED"].includes(input.decision) ||
-        !["READY_FOR_REVIEW", "APPROVED"].includes(c.job_state)
-      )
-        throw new Problem(
-          "This clip cannot be reviewed in its current state.",
-          409,
-        );
-      const reviewed = await one(db,
-        "UPDATE clips SET review_status=?,reviewed_at=? WHERE id=? AND owner=? AND attempt=? AND title=? AND description=? AND review_status=? AND reviewed_at IS ? AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=clips.job_id AND j.attempt=clips.attempt AND j.state IN ('READY_FOR_REVIEW','APPROVED')) RETURNING id",
-        input.decision, now(), c.id, owner, c.attempt, c.title, c.description, c.review_status, c.reviewed_at || null);
-      if (!reviewed) throw new Problem("Clip metadata changed before review. Refresh this clip.", 409);
-      const counts = await one(
-        db,
-        "SELECT SUM(review_status='PENDING') pending,SUM(review_status='APPROVED') approved FROM clips WHERE job_id=? AND attempt=?",
-        c.job_id,
-        c.attempt,
-      );
-      const next =
-        !counts.pending && counts.approved ? "APPROVED" : "READY_FOR_REVIEW";
-      await db.batch([
-        statement(
-          db,
-          "UPDATE jobs SET state=?,updated_at=? WHERE id=?",
-          next,
-          now(),
-          c.job_id,
-        ),
-        event(
-          db,
-          c.job_id,
-          next,
-          `Clip ${c.position} ${input.decision.toLowerCase()} by the workspace owner. Uploads remain disabled.`,
-          c.attempt,
-        ),
-      ]);
-      return json({ state: next });
-    }
+    const reviewed=await clipReviewRoute(request,env,db,c,owner,clipRoute[2],request.method==="POST"?await body(request):null);
+    if(reviewed)return json(reviewed);
     if (
       ["GET", "HEAD"].includes(request.method) &&
       ["video", "subtitles"].includes(clipRoute[2])
@@ -989,115 +925,11 @@ export async function api(request, env) {
     ).run();
     return json({ preferences: prefs, publishing_enabled: false });
   }
-  if (path === "/api/youtube/disconnect" && request.method === "POST") {
-    await statement(
-      db,
-      "DELETE FROM youtube_accounts WHERE owner=?",
-      owner,
-    ).run();
-    return json({ disconnected: true, publishing_enabled: false });
+  if(path==="/api/youtube/disconnect"&&request.method==="POST") {
+    await body(request);return json(await disconnectOAuth(env,db,owner));
   }
-  if (path === "/api/youtube/connect" && request.method === "GET") {
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
-      throw new Problem(
-        "Set up a Google OAuth Web application and its cloud secrets first. No account has been connected.",
-        503,
-      );
-    await secretKey(env);
-    const state = uuid() + uuid();
-    await statement(
-      db,
-      "INSERT INTO oauth_states(hash,owner,expires_at) VALUES(?,?,?)",
-      await hash(state),
-      owner,
-      new Date(Date.now() + 10 * 60000).toISOString(),
-    ).run();
-    const target = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    target.search = new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID,
-      redirect_uri: url.origin + "/api/youtube/callback",
-      response_type: "code",
-      scope:
-        "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
-      access_type: "offline",
-      prompt: "consent",
-      state,
-    }).toString();
-    return Response.redirect(target.href, 302);
-  }
-  if (path === "/api/youtube/callback" && request.method === "GET") {
-    const state = url.searchParams.get("state");
-    if (!state) throw new Problem("Missing YouTube OAuth state.", 403);
-    const consumed = await one(
-      db,
-      "DELETE FROM oauth_states WHERE hash=? AND owner=? AND expires_at>? RETURNING owner",
-      await hash(state),
-      owner,
-      now(),
-    );
-    if (!consumed)
-      throw new Problem(
-        "Connection request expired or was already used. Start again from YouTube Connection.",
-        403,
-      );
-    if (url.searchParams.get("error"))
-      return Response.redirect(
-        url.origin + "/youtube?connection=cancelled",
-        302,
-      );
-    const code = url.searchParams.get("code");
-    if (!code) throw new Problem("Google did not return a connection code.");
-    const response = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: env.GOOGLE_CLIENT_ID,
-        client_secret: env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: url.origin + "/api/youtube/callback",
-        grant_type: "authorization_code",
-      }),
-    });
-    if (!response.ok)
-      throw new Problem(
-        "Google could not complete authorization. Start the connection again.",
-        502,
-      );
-    const tokens = await response.json();
-    if (!tokens.refresh_token)
-      throw new Problem(
-        "Google did not supply offline access. Reconnect with consent to allow cloud use.",
-        409,
-      );
-    const channels = await fetch(
-      "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
-      { headers: { Authorization: `Bearer ${tokens.access_token}` } },
-    );
-    if (!channels.ok)
-      throw new Problem(
-        "Cannot read the authorized channel. Enable YouTube Data API and retry.",
-        502,
-      );
-    const channel = (await channels.json()).items?.[0];
-    if (!channel)
-      throw new Problem(
-        "This Google account has no accessible YouTube channel.",
-      );
-    const encrypted = await encryptTokens(env, {
-      ...tokens,
-      obtained_at: now(),
-    });
-    await statement(
-      db,
-      "INSERT INTO youtube_accounts(owner,channel_id,channel_title,encrypted_tokens,connected_at) VALUES(?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET channel_id=excluded.channel_id,channel_title=excluded.channel_title,encrypted_tokens=excluded.encrypted_tokens,connected_at=excluded.connected_at",
-      owner,
-      channel.id,
-      channel.snippet.title,
-      encrypted,
-      now(),
-    ).run();
-    return Response.redirect(url.origin + "/youtube?connection=success", 302);
-  }
+  if(path==="/api/youtube/connect"&&request.method==="GET")return startOAuth(env,db,owner,url.origin);
+  if(path==="/api/youtube/callback"&&request.method==="GET")return finishOAuth(env,db,owner,url);
   throw new Problem("Endpoint not found.", 404);
 }
 export default {

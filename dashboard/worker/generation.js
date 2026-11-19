@@ -151,6 +151,7 @@ export async function cleanup(
         ];
         if (env.BUCKET)
           await env.BUCKET.delete([...new Set(keys.filter(Boolean))]);
+        await db.prepare("UPDATE upload_intents SET invalidated_at=?,state=CASE WHEN state IN ('INITIATING','UPLOADING','RECONCILING') THEN 'RECONCILING' ELSE 'INVALIDATED' END,error='Media removed or retention ended.',updated_at=? WHERE clip_id=? AND state NOT IN ('COMPLETED','CANCELLED')").bind(new Date().toISOString(),new Date().toISOString(),clip.id).run();
         await db.prepare("DELETE FROM clips WHERE id=?").bind(clip.id).run();
         removed++;
       }
